@@ -134,6 +134,14 @@ function simpson(xs, ys) {
  *
  * `stations` comes from sampleSections(); pass the same one every frame rather
  * than re-sampling, since it depends only on the hull and not on the waterline.
+ *
+ * LCF is the longitudinal centre of flotation: the centroid of the waterplane,
+ * i.e. the longitudinal point about which the ship first pivots when a weight is
+ * added aboard. Nothing in this project read the field, and its integrand
+ * multiplied by a literal `0`, so it reported 0 for every hull. That is the same
+ * class of defect as a computed-but-never-read variable, in the opposite
+ * direction: a value that looks delivered and is not. It is now integrated for
+ * real, and pinned by a symmetry test on a wall-sided hull.
  */
 export function hydrostatics(stations, waterline) {
   if (!(waterline > 0)) {
@@ -195,8 +203,13 @@ export function hydrostatics(stations, waterline) {
   // BM = I / V is internally consistent by construction.
   const planeArea = simpson(ys, halfAtWaterline.map((h) => 2 * h));
   const planeI = simpson(ys, halfAtWaterline.map((h) => (2 / 3) * h ** 3));
-  // Longitudinal centre of flotation: area-weighted mean station.
-  const lcf = planeArea > EPS ? trapezium(ys, halfAtWaterline.map((h) => 2 * h * 0)) : 0;
+  // Longitudinal centre of flotation: the waterplane's centroid along y. The
+  // area strip at station y is 2*h(y) dy, so the centroid is
+  //     int 2*h(y)*y dy  /  int 2*h(y) dy
+  // over the same half-breadth samples as the volume, so LCF cannot disagree
+  // with waterplaneArea the way two independent formulas can.
+  const stripMoment = simpson(ys, halfAtWaterline.map((h, i) => 2 * h * ys[i]));
+  const lcf = planeArea > EPS ? stripMoment / planeArea : 0;
 
   return {
     volume,

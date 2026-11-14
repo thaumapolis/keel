@@ -154,4 +154,72 @@ check("beam dominates metacentric height at equal displacement", () => {
   );
 });
 
+check("LCF is the waterplane centroid, including when it is not at midships", () => {
+  // The pre-fix integrand multiplied by a literal 0, so LCF reported 0 for
+  // every hull. A symmetry test alone would not have caught that -- 0 is the
+  // right answer for a symmetric ship -- so this pins the interesting case too:
+  // a waterplane whose centroid is NOT at midships, against a centroid
+  // recomputed in the test by adaptive Simpson over u, an independent method and
+  // an independent parameterisation of the same shape.
+  //
+  // The offset is produced by skewing the station abscissa, which is a legal
+  // thing to feed hydrostatics (it integrates over whatever ys it is given).
+  // Direction: y = L*(u^1.6 - 0.5) bunches stations at u=0 and spaces them out
+  // toward u=1. The taper is even about u=0.5, where halfBreadth is at its
+  // maximum, so the broader half of the waterplane -- u < 0.5, negative y --
+  // lands in the *denser* sampling, and the centroid must come out forward of
+  // midships. Asserting the other sign here would have been a guess.
+  const hull = new Hull({
+    length: 12,
+    beam: 4,
+    depth: 2.4,
+    blockCoefficient: 0.62,
+    prismaticCoefficient: 0.9,
+  });
+  const stations = sampleSections(hull);
+
+  // Claim 1: symmetric hull, symmetric sampling => centroid exactly y = 0, at
+  // every waterline. This is what catches an LCF that is nonzero by accident.
+  for (const fraction of [0.3, 0.55, 0.9]) {
+    const h = hydrostatics(stations, fraction * hull.depth);
+    assert.ok(
+      Math.abs(h.LCF) < 1e-12,
+      `symmetric waterplane at ${(fraction * 100).toFixed(0)}% depth gave LCF ${h.LCF}`,
+    );
+  }
+
+  // Claim 2: an asymmetric waterplane has a nonzero centroid, and it agrees
+  // with an independent quadrature to better than 0.5%.
+  const skew = (u) => hull.length * (Math.pow(u, 1.6) - 0.5);
+  const skewed = stations.map((station, i) => ({
+    ...station,
+    y: skew(i / (stations.length - 1)),
+  }));
+  const waterline = 0.55 * hull.depth;
+  const actual = hydrostatics(skewed, waterline);
+
+  // Reference: same shape, integrated over u with dy/du as the Jacobian, so the
+  // test's abscissa is uniform rather than the code's skewed one.
+  const simpson = (f, a, b, steps) => {
+    const h = (b - a) / steps;
+    let total = f(a) + f(b);
+    for (let i = 1; i < steps; i += 1) total += f(a + i * h) * (i % 2 ? 4 : 2);
+    return (h / 3) * total;
+  };
+  const dydu = (u) => hull.length * 1.6 * Math.pow(u, 0.6);
+  const strip = (u) => 2 * hull.halfBreadth(u, waterline) * dydu(u);
+  const referenceArea = simpson(strip, 0, 1, 8001);
+  const referenceLCF =
+    simpson((u) => strip(u) * skew(u), 0, 1, 8001) / referenceArea;
+
+  assert.ok(
+    actual.LCF < -0.1,
+    `centroid should be forward of midships, got ${actual.LCF.toFixed(4)}`,
+  );
+  assert.ok(
+    Math.abs(actual.LCF - referenceLCF) < 0.005 * Math.abs(referenceLCF),
+    `LCF ${actual.LCF.toFixed(5)} vs independent ${referenceLCF.toFixed(5)}`,
+  );
+});
+
 console.log(`\n${passed} hydrostatics checks passed`);
