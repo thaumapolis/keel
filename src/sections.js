@@ -1,4 +1,5 @@
 import { columnBounds } from "./columns.js";
+import { gaussLegendre } from "./quad.js";
 
 /**
  * sections.js -- the hydrostatics of a HEELED hull, integrated from the hull form.
@@ -73,61 +74,6 @@ import { columnBounds } from "./columns.js";
  * every hull built from it displaced about 22% wrong while still looking exactly
  * like a hull. Hardcoded constants are code and need the same provenance.
  */
-function legendre(n, x) {
-  // Recurrence gives P_n and P_{n-1}; the derivative identity
-  //     (1 - x^2) P_n'(x) = n (P_{n-1}(x) - x P_n(x))
-  // needs P_{n-1} from BEFORE the last update. The form with (x^2 - 1) in the
-  // denominator and (x P_n - P_{n-1}) in the numerator is the same identity;
-  // writing it with the wrong sign, or with `previous` read after the loop has
-  // already advanced it, yields a derivative off by a factor and the root
-  // iteration converges to the wrong place. Detected by the weight-sum check
-  // below, not by inspection: gaussLegendre(61) summed to 2.05.
-  let previous = 1;
-  let current = x;
-  for (let k = 2; k <= n; k += 1) {
-    const next = ((2 * k - 1) * x * current - (k - 1) * previous) / k;
-    previous = current;
-    current = next;
-  }
-  return {
-    value: current,
-    derivative: (n * (previous - x * current)) / (1 - x * x),
-  };
-}
-
-function gaussLegendre(n) {
-  // Round to an even order and say so. Nodes come in +-pairs because P_n is
-  // odd/even about the origin, so the pairs are enumerated i = 0..n/2-1; asking
-  // for an odd order and using ceil produces (n+1)/2 pairs, i.e. n+1 nodes, with
-  // the node nearest zero counted twice and its weight too. That silently broke
-  // the rule -- gaussLegendre(61) summed its weights to 2.0511 instead of 2, a
-  // 2.5% error invisible unless something checks -- so an odd order is corrected
-  // rather than accepted, and the weight-sum assertion below would catch any
-  // future slip in this reasoning.
-  const order = n % 2 === 0 ? n : n + 1;
-  const nodes = [];
-  const weights = [];
-  for (let i = 0; i < order / 2; i += 1) {
-    let x = Math.cos((Math.PI * (i + 0.75)) / (order + 0.5));
-    for (let iteration = 0; iteration < 100; iteration += 1) {
-      const { value, derivative } = legendre(order, x);
-      const step = value / derivative;
-      x -= step;
-      if (Math.abs(step) < 1e-16) break;
-    }
-    const { derivative } = legendre(order, x);
-    const weight = 2 / ((1 - x * x) * derivative * derivative);
-    nodes.push(-x, x);
-    weights.push(weight, weight);
-  }
-  const weightSum = weights.reduce((a, b) => a + b, 0);
-  if (Math.abs(weightSum - 2) > 1e-12) {
-    throw new Error(`gaussLegendre(${n} -> ${order}): weights sum to ${weightSum}, expected 2`);
-  }
-  return { nodes, weights };
-}
-
-
 /**
  * Everything about a heel angle that does NOT depend on the waterline: the
  * column x positions and their z ranges, per station, with Simpson weights.
@@ -571,4 +517,122 @@ export function rightingArmAt(hull, angleRad, KG, uprightVolume, options) {
     body: { bx: state.bx, bz: state.bz },
     worldCenter: state.worldCenter,
   };
+}
+
+/**
+ * renderGeometry -- the world-frame geometry the 3D view draws, computed from the
+ * SAME halfBreadth the hydrostatics integrate.
+ *
+ * The renderer needs two closed world-space outlines per heel state: the waterplane
+ * (where the water surface world z = 0 meets the hull) and the deck sheer (the deck
+ * edge, lofted along the hull). Handing the renderer a body-frame mesh and letting
+ * it rotate would reproduce the exact class of frame bug this file has been bitten
+ * by (double-rotating buoyancy), so the rotation happens HERE, once, in the same
+ * convention as heelAt:
+ *
+ *   world xw =  x*cosT + z*sinT
+ *   world zw = -x*sinT + z*cosT      (y unchanged; the world water surface is zw = 0)
+ *
+ * Waterplane. At heel, a body-frame point is on the water surface when zw = 0,
+ * i.e. z_body = x*cosT / sinT... no -- solve zw = 0 for the section height. For a
+ * column at body |x| the water cuts it at body height t = (0 + x*sinT)/cosT
+ * (the same expression heelAt uses, with w = 0 because the water surface passes
+ * through the world origin). The half-breadth of the waterplane at that station is
+ * b(u, t). Trace both sides out and back to close the ring.
+ *
+ * This is the shape that does the righting, so getting it right matters more than
+ * getting it cheap; it is checked against the integrated waterplane area.
+ */
+export function renderGeometry(hull, angleRad, waterline, { nStations = 60, nEdge = 40 } = {}) {
+  const sinT = Math.sin(angleRad);
+  const cosT = Math.cos(angleRad);
+  // waterline is a BODY-frame height measured where the water surface crosses the
+  // centreline (body x = 0). heelAt(w) cuts each column at body height
+  // t = (waterline + x*sinT)/cosT; the world water surface is zw = 0.
+  // Rotate a body point into the world. heelAt's world frame puts the keel-anchored
+  // body origin at height (waterline) above the water surface, so a point on the
+  // water surface rotates to world z = waterline, not 0. The renderer (and the
+  // "submerged iff world z < 0" convention every module uses) wants the water
+  // SURFACE at z = 0, so we drop the whole ship by waterline. One offset, applied
+  // to everything, so deck, waterplane and buoyancy stay mutually consistent.
+  const toWorld = (x, y, z) => ({
+    x: x * cosT + z * sinT,
+    y,
+    z: -x * sinT + z * cosT - waterline,
+  });
+
+  // Waterplane ring: for each station, the waterline's half-breadth, then out the
+  // starboard side and back the port side.
+  const wp = [];
+  const stations = [];
+  for (let i = 0; i < nStations; i += 1) {
+    const u = i / (nStations - 1);
+    const y = hull.length * (u - 0.5);
+    stations.push({ u, y });
+    // The water surface at this station is a line in the body x-z plane. Its
+    // widest body |x| where the hull still reaches that height gives the
+    // waterplane half-breadth there. Invert halfBreadth(u, z) monotone in z:
+    // breadth(x) such that b(u, z_of_x) sits on zw=0. Because the body height of
+    // the water at body x is t(x) = (waterline + x*sinT)/cosT, the waterplane edge
+    // is where halfBreadth(u, t(x)) = |x| -- found by a short bisection in x.
+    const edgeHalfBreadth = waterHalfBreadth(hull, u, waterline, sinT, cosT);
+    wp.push({ star: edgeHalfBreadth, y });
+  }
+  const waterplane = [];
+  // starboard edge forward, then port edge back, all on the world surface zw=0.
+  for (const s of wp) {
+    waterplane.push(toWorld(s.star, s.y, waterlineTAt(hull, s.star, waterline, sinT, cosT)));
+  }
+  for (let i = wp.length - 1; i >= 0; i -= 1) {
+    const s = wp[i];
+    waterplane.push(toWorld(-s.star, s.y, waterlineTAt(hull, s.star, waterline, sinT, cosT)));
+  }
+
+  // Deck sheer: trace the deck edge (top of the section outline) along the hull,
+  // both sides, so the tilt of the topsides reads against the level waterline.
+  const deckStarboard = [];
+  const deckPort = [];
+  for (let i = 0; i <= nEdge; i += 1) {
+    const u = i / nEdge;
+    const y = hull.length * (u - 0.5);
+    const halfB = hull.halfBreadth(u, hull.depth);
+    deckStarboard.push(toWorld(halfB, y, hull.depth));
+    deckPort.push(toWorld(-halfB, y, hull.depth));
+  }
+  const deckPolys = [deckStarboard.concat(deckPort.slice().reverse())];
+
+  return { waterplane, deckPolys, toWorld };
+}
+
+/** Body height of the water surface above body x, on the zw=0 water plane. */
+function waterlineTAt(hull, absX, waterline, sinT, cosT) {
+  return (waterline + absX * sinT) / cosT;
+}
+
+/**
+ * Half-breadth of the waterplane at station u: the |x| where the section's
+ * half-breadth equals the body x that the water surface sits at. halfBreadth
+ * decreases as we look at narrower z, and the water height t(x) rises with x, so
+ * there is one crossing; bisect it. Bounded by the deck half-breadth at this u.
+ */
+function waterHalfBreadth(hull, u, waterline, sinT, cosT) {
+  const deckHalf = hull.halfBreadth(u, hull.depth);
+  if (deckHalf <= 0) return 0;
+  // At body x, the water sits at body height t(x); the hull's half-breadth down
+  // there is halfBreadth(u, t). The waterplane edge is where that breadth reaches
+  // x. Define f(x) = halfBreadth(u, t(x)) - x; f > 0 inside the waterplane, < 0
+  // outside; bisect the root in [0, deckHalf].
+  const f = (x) => {
+    const t = (waterline + x * sinT) / cosT;
+    if (t <= 0) return -x;
+    if (t > hull.depth) return deckHalf; // water overtops the deck: wet to the deck edge
+    return hull.halfBreadth(u, t) - x;
+  };
+  if (f(deckHalf) >= 0) return deckHalf;  // fully wet at this station's deck edge
+  let lo = 0, hi = deckHalf;
+  for (let i = 0; i < 48; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) > 0) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
 }

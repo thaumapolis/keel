@@ -61,5 +61,3 @@ export function columnBounds(hull, u, absX) {
 export function stationColumns(hull, u, xs) {
   return xs.map((x) => columnBounds(hull, u, Math.abs(x)));
 }
-
-export { Hull };

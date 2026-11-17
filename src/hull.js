@@ -1,3 +1,5 @@
+import { gaussLegendre } from "./quad.js";
+
 /**
  * hull.js — the ship's shape, and the hydrostatics that fall out of it.
  *
@@ -106,61 +108,6 @@ const SECTION_SAMPLES = 97;
  */
 
 /** Gauss-Legendre nodes and weights on [-1, 1], generated and checked. */
-function legendre(n, x) {
-  let previous = 1;
-  let current = x;
-  for (let k = 2; k <= n; k += 1) {
-    const next = ((2 * k - 1) * x * current - (k - 1) * previous) / k;
-    previous = current;
-    current = next;
-  }
-  // (1 - x^2) P_n'(x) = n (P_{n-1}(x) - x P_n(x)). P_{n-1} must be the value from
-  // BEFORE the last recurrence step; reading `current` gives a wrong derivative
-  // and the root iteration converges elsewhere.
-  return {
-    value: current,
-    derivative: (n * (previous - x * current)) / (1 - x * x),
-  };
-}
-
-function gaussLegendre(order) {
-  // Generated rather than transcribed: a hand-copied weights table in an earlier
-  // revision summed to 2.4488 instead of the required 2, an 11% error on the
-  // cheapest check that exists -- "integrate the constant 1 over [-1, 1]" -- and
-  // because the rule feeds the Cb calibration every hull built from it displaced
-  // about 22% wrong while still looking exactly like a hull.
-  //
-  // Order coerced to even: nodes come in +-pairs, so enumerating pairs with ceil()
-  // on an odd order yields n+1 nodes with the one nearest zero double-counted
-  // (gaussLegendre(61) summed to 2.0511). Callers must iterate nodes.length, not
-  // the requested order: indexing to the requested order read one past the array
-  // and produced a -515% volume, which looks like divergent numerics and is an
-  // index misalignment.
-  const even = order % 2 === 0 ? order : order + 1;
-  const nodes = [];
-  const weights = [];
-  for (let i = 0; i < even / 2; i += 1) {
-    let x = Math.cos((Math.PI * (i + 0.75)) / (even + 0.5));
-    for (let iteration = 0; iteration < 100; iteration += 1) {
-      const { value, derivative } = legendre(even, x);
-      const step = value / derivative;
-      x -= step;
-      if (Math.abs(step) < 1e-16) break;
-    }
-    const { derivative } = legendre(even, x);
-    const weight = 2 / ((1 - x * x) * derivative * derivative);
-    nodes.push(-x, x);
-    weights.push(weight, weight);
-  }
-  const weightSum = weights.reduce((total, w) => total + w, 0);
-  if (Math.abs(weightSum - 2) > 1e-12) {
-    throw new Error(
-      `gaussLegendre(${order} -> ${even}): weights sum to ${weightSum}, expected 2`,
-    );
-  }
-  return { nodes, weights };
-}
-
 // Means over u and over z in [0,1], cached at module scope: the nodes never change
 // and these run once per bisection step of the block-coefficient solve.
 const U_RULE = gaussLegendre(120);

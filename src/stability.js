@@ -27,7 +27,7 @@
 
 import { buildHeel, FloatFailure, floatState, heelAt, rightingArmAt } from "./sections.js";
 
-const DEG = Math.PI / 180;
+export const DEG = Math.PI / 180;
 
 /**
  * Did the sweep run off the end of what this hull can float at, as opposed to
