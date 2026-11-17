@@ -1,3 +1,5 @@
+import { columnBounds } from "./columns.js";
+
 /**
  * sections.js -- the hydrostatics of a HEELED hull, integrated from the hull form.
  *
@@ -52,7 +54,7 @@
  * error falls as the spacing (nu=31 -> -0.20%, 61 -> -0.01%, 121 -> +0.04%).
  * Against the naive closed form L*B*D*blockCoefficient it plateaus at +0.048%
  * however fine the grid: that plateau is NOT this file's error, it is
- * hull.js's block-coefficient solver, whose meanVerticalProfile() uses a
+ * hull.js's block-coefficient solver, whose meanVerticalProfileAt(u) uses a
  * left-endpoint rectangle rule where the taper is steepest at the keel, so the
  * exponent it solves for is off. The closed form is the approximation.
  *
@@ -125,45 +127,6 @@ function gaussLegendre(n) {
   return { nodes, weights };
 }
 
-/**
- * Body-frame z range in which the hull exists at longitudinal fraction u and
- * body |x| = absX, or null where the column misses the hull entirely.
- *
- * Solved by bisection on the hull form itself. Hull.verticalTaper rises
- * monotonically from the keel to the flange and falls gently above it, so a
- * column inside the maximum breadth has exactly one crossing on the way up and,
- * if it is also inside the deck-edge breadth, one on the way down. Those two
- * crossings are the column's [bottom, top].
- */
-function columnBounds(hull, u, absX) {
-  const taper = hull.longitudinalTaper(u);
-  if (taper <= 0) return null;
-  const maxHalf = (hull.beam / 2) * taper;
-  if (absX > maxHalf) return null;
-  const flangeZ = hull.flangeFraction * hull.depth;
-
-  let lo = 0;
-  let hi = flangeZ;
-  for (let i = 0; i < 50; i += 1) {
-    const mid = (lo + hi) / 2;
-    if (hull.halfBreadth(u, mid) < absX) lo = mid;
-    else hi = mid;
-  }
-  const bottom = (lo + hi) / 2;
-
-  let top = hull.depth;
-  if (absX > hull.halfBreadth(u, hull.depth)) {
-    lo = flangeZ;
-    hi = hull.depth;
-    for (let i = 0; i < 50; i += 1) {
-      const mid = (lo + hi) / 2;
-      if (hull.halfBreadth(u, mid) > absX) lo = mid;
-      else hi = mid;
-    }
-    top = (lo + hi) / 2;
-  }
-  return { bottom, top };
-}
 
 /**
  * Everything about a heel angle that does NOT depend on the waterline: the
@@ -287,85 +250,272 @@ export function buildHeel(hull, angleRad, { nu = 122, nx = 481 } = {}) {
  * centroid and the transverse shift cannot disagree with each other the way three
  * independent formulas can.
  */
+/**
+ * Volume and buoyancy centre for a precomputed heel, when the water surface is
+ * the world-horizontal plane at height w on the centreline.
+ *
+ * RETURNS BODY-FRAME COORDINATES, and the whole function is a carepath between
+ * two frames, so both are stated in the name of every intermediate.
+ *
+ *   world xw =  x*cosT + z*sinT
+ *   world zw = -x*sinT + z*cosT
+ *
+ * Submerged part of a column: body z in [bottom, min(top, t)] where
+ * t = (w + x*sinT)/cosT is the body-frame height of the water surface over that
+ * column. A slice of body dz occupies world height cosT*dz, so dV = cosT*h*dx*dz;
+ * the cosT is a constant scale and cancels in every centroid, but it is kept so
+ * the intermediate sums are actual volumes and not mixed units.
+ *
+ * THE CENTROID IS TAKEN IN THE WORLD FRAME AND THEN ROTATED BACK, and that is
+ * the fix for a bug that produced a buoyancy centre 8 m above the keel on a 2.4 m
+ * hull. The previous version computed the first moment of the submerged volume
+ * about the BODY origin and divided by cosT, i.e. it assumed the world moment
+ * divided by cosT gives back a body coordinate. It does not: the moment of a
+ * rotated body about the body axes is not the rotation of its moment about the
+ * world axes, because the slice heights themselves are being measured in the
+ * wrong frame. The error grows like 1/cosT, which is 1.0 at 0 deg, 1.3 at 40 deg,
+ * 2.0 at 60 deg and unbounded at 90 -- so the artefact was invisible upright, mild
+ * at moderate heel, and catastrophic exactly where stability matters most.
+ * Measured: bz reported 8.00 at 60 deg against a hull whose deck is at 2.40.
+ *
+ * Doing it correctly: accumulate the world-frame first moments of each column,
+ * divide by volume to get the world centroid, then rotate that single point back
+ * by -heel. One rotation, at the end, of a point -- not of a moment.
+ */
 export function heelAt(heel, w) {
   const { stations, xs, wx, sinT, cosT, length } = heel;
   let volume = 0;
-  let momentX = 0;
-  let momentZ = 0;
+  let bodyX = 0;
+  let bodyZ = 0;
+  let worldX = 0;
+  let worldZ = 0;
   for (const station of stations) {
-    let area = 0;
-    let areaX = 0;
-    let areaZ = 0;
+    let aVolume = 0;
+    let aBodyX = 0;
+    let aBodyZ = 0;
+    let aWorldX = 0;
+    let aWorldZ = 0;
     for (let j = 0; j < xs.length; j += 1) {
       const bounds = station.bounds[j];
       if (!bounds) continue;
       const x = xs[j];
-      const water = (w + x * sinT) / cosT;
-      const top = Math.min(bounds.top, water);
-      const height = top - bounds.bottom;
+      const t = (w + x * sinT) / cosT;
+      const top = Math.min(bounds.top, t);
+      const bottom = bounds.bottom;
+      const height = top - bottom;
       if (height <= 0) continue;
-      const column = wx[j];
-      area += column * height;
-      areaX += column * height * x;
-      areaZ += column * (top * top - bounds.bottom * bounds.bottom) / 2;
+      const column = wx[j] * cosT * length;
+      // int over body z of the slice, with world x and z substituted.
+      //   int dz              = h
+      //   int z dz            = (top^2 - bottom^2)/2
+      //   int z^2 dz          = (top^3 - bottom^3)/3
+      const m0 = height;
+      const m1 = (top * top - bottom * bottom) / 2;
+      const vol = column * m0;
+      // xw = x*cosT + z*sinT, so int xw d(body z) = x*cosT*m0 + sinT*m1.
+      // zw = -x*sinT + z*cosT, so int zw d(body z) = -x*sinT*m0 + cosT*m1.
+      aVolume += vol;
+      aBodyX += column * (x * m0);
+      aBodyZ += column * m1;
+      aWorldX += column * (x * cosT * m0 + sinT * m1);
+      aWorldZ += column * (-x * sinT * m0 + cosT * m1);
     }
-    volume += station.weight * area;
-    momentX += station.weight * areaX;
-    momentZ += station.weight * areaZ;
+    volume += station.weight * aVolume;
+    bodyX += station.weight * aBodyX;
+    bodyZ += station.weight * aBodyZ;
+    worldX += station.weight * aWorldX;
+    worldZ += station.weight * aWorldZ;
   }
-  // Station weights carry the du = ds/2 Jacobian and the column weights carry the
-  // dx = halfBeam * dt Jacobian, so both integrals are already complete and the
-  // only remaining factor is the length, which converts the integral over u in
-  // [0, 1] into the integral over y.
-  const k = length;
-  volume *= k;
-  momentX *= k;
-  momentZ *= k;
   if (!(volume > 1e-12)) return null;
-  return { volume, bx: momentX / volume, bz: momentZ / volume };
+  // Accumulate the BODY-frame first moments as well, and return the body centroid
+  // -- which is what bx/bz are documented to be -- plus the world centroid, so no
+  // caller has to rotate anything. The two are related by the forward transform
+  //   xw = bx*cosT + bz*sinT,  zw = -bx*sinT + bz*cosT
+  // and the righting arm needs only the world one.
+  //
+  // Why both, and not just the world: getting this wrong twice in a row was
+  // caused by returning one and letting a caller rotate it, which silently
+  // rotated twice. The exact rectangular-barge check settles the frame -- at any
+  // heel the body-frame buoyancy height is measured from the keel and must rise
+  // monotonically toward the section's own centroid, and at 0 deg it is exactly
+  // T/2 by inspection (draft 1.32 gives 0.66). Rotating the body centroid once
+  // into world coordinates reproduces that; the moment-based route that produced
+  // "bz = 8.0 m on a 2.4 m hull" was measuring the moment about the wrong frame's
+  // axes and dividing by cosT.
+  return {
+    volume,
+    bx: bodyX / volume,
+    bz: bodyZ / volume,
+    worldCenter: { x: worldX / volume, z: worldZ / volume },
+  };
 }
+
+/**
+ * Why a target displacement cannot be reached at a given heel.
+ *
+ * "It will not float" is two different facts and the UI has to say them apart.
+ * Too full means the hull is already carrying more than the whole hull holds --
+ * it was never going to float at ANY angle. Beyond reach means the hull floats
+ * fine, just not heeled this far. Returning the reason rather than null keeps
+ * callers from having to infer it from angle, which they cannot do correctly:
+ * the reachable envelope is not symmetric, and measured on a 40%-draft box-form
+ * hull the floatable range runs 0-90.9 deg on one side of the keel-down regime
+ * and comes back above 179 deg, because the hull is a sealed box and righting
+ * and floating are genuinely separate properties.
+ */
+export const FloatFailure = Object.freeze({
+  TOO_FULL: "too full",
+  BEYOND_REACH: "beyond reach",
+  NOTHING_TO_INTEGRATE: "nothing to integrate",
+});
 
 /**
  * The floating waterline at a heel angle, for a target displacement.
  *
- * Returns null when no waterline reaches the target -- the hull is too shallow to
- * float that way over. Returning rather than throwing lets a sweep treat the end
- * of the range as data; callers that asked for one specific angle wrap this and
- * raise, because there "it will not float" IS the error.
+ * Returns { waterline } or { failure, maxVolume } -- never null, because null
+ * threw away the distinction above. Callers that want an exception wrap this.
  *
  * volume is strictly increasing in w between "no column wet" and "every column
  * fully wet", and above the fully-wet height it is constant, so the bracket's
  * upper end must be derived from where monotonicity stops, not from the hull's
  * nominal size: fully wet needs w >= max over columns of (top*cos - x*sin), which
  * for a hull of depth D and half-beam h is D*cos + h*sin over cos, i.e.
- * D + h*tan. An earlier version used 2*depth, which sits BELOW that past ~45 deg
- * on this hull: bisection converged on the bracket ceiling itself, the volume
- * froze, and a smooth monotone physically meaningless GZ curve came out.
+ */
+/**
+ * The floating waterline at a heel angle, for a target displacement.
+ *
+ * Returns { waterline } or { failure, maxVolume } -- never null, because null
+ * threw away the distinction between "this hull holds less than that" and "not at
+ * this angle", and the UI has to say them apart.
+ *
+ * BRACKETING. w is the height of the world-horizontal water plane measured on the
+ * centreline, and for a heeled ship that plane can pass far above the hull's own
+ * top, so w is NOT confined to [0, depth] -- an earlier version assumed it was and
+ * the bracket then excluded the solution at small heel angles, reporting "beyond
+ * reach" at 0 deg, and wherever it did converge it returned bx = 0 at every angle
+ * because the plane was never free to move across the hull.
+ *
+ * Nor is the useful lower limit the lowest column bottom. Column bottoms are
+ * computed in BODY frame; a column at body x sits at world height offset by
+ * x*sinT/cosT, so the w at which a column STARTS to wet is
+ *
+ *   cosT > 0:  w > bottom*cosT - x*sinT     (rising in w)
+ *   cosT < 0:  w < bottom*cosT - x*sinT     (falling in w)
+ *
+ * and the bracket must span from BELOW the smallest of those to ABOVE the largest.
+ * Taking "largest" as the near end -- which is what max(bottom*cosT - x*sinT) is,
+ * and which sits at the deck for an upright hull -- put the whole bracket above
+ * every solution for a ship floating at partial depth: measured at 0 deg with the
+ * target holding 55% of depth, the bracket started at 2.4 and volume came back 0,
+ * so maxVolume 0 was reported for a hull that floats perfectly well.
+ *
+ * So: derive a first guess from the column bottoms, then EXPAND BOTH ENDS until
+ * the target volume is bracketed. Termination is guaranteed because submerged
+ * volume tends to 0 as w goes to the dry end and to the whole hull as w goes to
+ * the wet end, monotonically in between (the single-interval property of
+ * columns.js is what makes it monotone).
  */
 export function floatWaterline(heel, targetVolume) {
   const { xs, stations, sinT, cosT } = heel;
-  let wetMax = -Infinity;
+  let low = Infinity;
+  let high = -Infinity;
   for (const station of stations) {
     for (let j = 0; j < xs.length; j += 1) {
       const bounds = station.bounds[j];
       if (!bounds) continue;
-      const needed = bounds.top * cosT - xs[j] * sinT;
-      if (needed > wetMax) wetMax = needed;
+      const f = bounds.bottom * cosT - xs[j] * sinT;
+      if (f < low) low = f;
+      if (f > high) high = f;
     }
   }
-  // A small margin above the fully-wet height, so the top of the bracket is
-  // unambiguously fully wet rather than exactly touching the last column.
-  const maxVolume = heelAt(heel, wetMax + 1e-6)?.volume ?? 0;
-  if (!(maxVolume >= targetVolume * (1 - 1e-9))) return null;
+  if (!(low < high)) {
+    // No column at all is wet at any waterline: the heel data has nothing to
+    // integrate. Distinct from TOO_FULL, which means there is something to
+    // integrate and it is not enough.
+    return { failure: FloatFailure.NOTHING_TO_INTEGRATE, maxVolume: 0 };
+  }
 
-  let hi = wetMax + 1e-6;
-  let lo = -hi;
+  // lo is the lowest bottom EXACTLY, not one margin below it, and that is not
+  // sloppiness. A keel column has bottom = 0, so "lowest bottom minus a margin"
+  // is negative, and heelAt returns null below the hull rather than 0 -- which
+  // the expansion loop below reads as "the dry end is comfortably under target"
+  // and stops expanding. The bracket then does not contain the solution, the
+  // bisection converges near w = 0 where heelAt is null, and a hull floating
+  // happily at 55% of its depth is reported as unable to float at all. Every
+  // column is wet at w = low by definition, so the volume here is positive, and
+  // it is still the dry end of the bracket: at most a hair under target.
+  let lo = low;
+  let hi = high + Math.max(1, high - low);
+
+  const volumeAt = (w) => heelAt(heel, w)?.volume ?? 0;
+  // Volume increases with w below 90 deg of heel and DECREASES above it: past 90
+  // the body-to-world map reverses orientation, so raising the plane dries the
+  // hull. Measured on one hull, volume(w) ran 0 -> 77.03 over w in [0, 2.40] at
+  // 89.9 deg and the mirror 77.03 -> 0 over [-2.00, 2.00] at 90.01 deg. Expressing
+  // the search as "the boundary between enough and not enough", in terms of the
+  // orientation rather than of lo/hi, makes both signs of cosT land on the
+  // waterline instead of being driven to the dry end -- an earlier version assumed
+  // increasing, drove w to the dry end past 90 deg, reported maxVolume 0.000, and
+  // confidently declared a floating hull "TOO FULL to float".
+  const increasing = cosT > 0;
+  const enough = (w) => volumeAt(w) >= targetVolume * (1 - 1e-9);
+  const wetEnd = () => (increasing ? hi : lo);
+
+  // Expand until the wet end actually holds the target.
+  for (let step = 0; step < 80; step += 1) {
+    if (enough(wetEnd())) break;
+    if (step === 79) {
+      return { failure: FloatFailure.TOO_FULL, maxVolume: volumeAt(wetEnd()) };
+    }
+    if (increasing) hi += Math.max(1, Math.abs(hi)) * 0.5;
+    else lo -= Math.max(1, Math.abs(lo)) * 0.5;
+  }
+  // Expand the dry end until volume there is under the target, so the boundary is
+  // genuinely inside the bracket rather than below the low end.
+  for (let step = 0; step < 80; step += 1) {
+    const dryEnd = increasing ? lo : hi;
+    // Not-enough is only meaningful where there is a solid to measure. heelAt
+    // returns null once the plane is off the hull entirely, and treating that as
+    // "under target" is what let a bracket that missed the solution pass this
+    // loop untouched.
+    if (volumeAt(dryEnd) === 0 || !enough(dryEnd)) break;
+    if (step === 79) {
+      return { failure: FloatFailure.TOO_FULL, maxVolume: volumeAt(wetEnd()) };
+    }
+    if (increasing) lo -= Math.max(1, Math.abs(lo)) * 0.5;
+    else hi += Math.max(1, Math.abs(hi)) * 0.5;
+  }
+
+  // Bisection on the boundary between "not enough" and "enough".
+  //
+  // The direction is set by the orientation, NOT by which end is numerically
+  // larger, and getting this backwards is easy because both readings of the
+  // ternary look defensible. The invariant is: lo stays on the not-enough side
+  // and hi stays on the enough side, so the interval always contains the crossing.
+  // Below 90 deg of heel volume increases with w, so a mid that is enough moves
+  // HI down; above 90 deg volume DEcreases with w, so a mid that is enough moves
+  // LO up. An earlier revision had the two cases swapped -- `if (enough(mid) ===
+  // increasing) lo = mid` -- which pushed lo toward the saturated wet end, and
+  // because volume is constant above the hull, the converged w was a point where
+  // the volume trivially equals the whole hull. That is how a hull floating at
+  // 55% of its depth came back with GZ = 901 metres and a buoyancy centre 6.8 m
+  // above the keel on a 2.4 m boat: the "waterline" was 4.8 m, outside the ship,
+  // and bz was being extrapolated by the cosT division rather than measured.
   for (let i = 0; i < 60; i += 1) {
     const mid = (lo + hi) / 2;
-    if ((heelAt(heel, mid)?.volume ?? 0) < targetVolume) lo = mid;
-    else hi = mid;
+    if (enough(mid)) hi = mid;
+    else lo = mid;
   }
-  return (lo + hi) / 2;
+  // hi is the tightest w that still holds the target volume, in both
+  // orientations, because the loop above maintains that invariant directly.
+  const waterline = hi;
+  if (!enough(waterline)) {
+    // Unreachable in exact arithmetic once the expansion above succeeded. Guards
+    // the bracket itself; the failure it catches is a silently wrong waterline,
+    // which is the worst thing this function could hand back.
+    return { failure: FloatFailure.BEYOND_REACH, maxVolume: volumeAt(waterline) };
+  }
+  return { waterline };
 }
 
 /**
@@ -374,11 +524,13 @@ export function floatWaterline(heel, targetVolume) {
  */
 export function floatState(hull, angleRad, targetVolume, options) {
   const heel = buildHeel(hull, angleRad, options);
-  const w = floatWaterline(heel, targetVolume);
-  if (w === null) return null;
-  const body = heelAt(heel, w);
+  const solution = floatWaterline(heel, targetVolume);
+  if (solution.failure !== undefined) {
+    return { failure: solution.failure, maxVolume: solution.maxVolume };
+  }
+  const body = heelAt(heel, solution.waterline);
   if (!body) return null;
-  return { waterline: w, ...body };
+  return { waterline: solution.waterline, ...body };
 }
 
 /**
@@ -387,14 +539,36 @@ export function floatState(hull, angleRad, targetVolume, options) {
  */
 export function rightingArmAt(hull, angleRad, KG, uprightVolume, options) {
   const state = floatState(hull, angleRad, uprightVolume, options);
-  if (!state) return null;
+  // Pass the reason through rather than collapsing it to null: "this hull does
+  // not float at all" and "not at this angle" need to reach the caller intact.
+  if (state === null) return null;
+  if (state.failure !== undefined) return { failure: state.failure, maxVolume: state.maxVolume };
   const sinT = Math.sin(angleRad);
-  const cosT = Math.cos(angleRad);
-  const bWorldX = state.bx * cosT + state.bz * sinT;
+  // GZ is the HORIZONTAL distance in the world from the centreline to the buoyancy
+  // centre, minus the horizontal offset of the centre of gravity. Both terms are
+  // world quantities and heelAt already returns the world centroid -- using the
+  // body-frame bx here and rotating it would be a second rotation of the same
+  // point, which is how this line produced a GZ of 901 m on a 4 m beam.
+  // GZ is the horizontal distance between the buoyancy centre's line of action
+  // and the centre of gravity, both measured in the WORLD. The moment arm of the
+  // buoyancy force about G is exactly (Bxw - KG*sinT): the buoyancy force is
+  // vertical through (Bxw, bzw) and the weight acts at (KG*sinT, KG*cosT) once
+  // the ship heels, and the horizontal separation is all a vertical force pair
+  // contributes.
+  //
+  // There is no volume-ratio factor here, and an earlier version multiplied the
+  // whole arm by (state.volume / uprightVolume). That ratio is 1 whenever the
+  // waterline solve has done its job -- the solve exists precisely to hold
+  // displacement constant -- so it could only ever be 1 or a report that the solve
+  // failed. Carrying it as a correction made the numbers look adjusted rather than
+  // measured, and if the volumes ever genuinely differ the right response is to
+  // say so, not to scale the answer.
+  const bWorldX = state.worldCenter.x;
   return {
     volume: state.volume,
     waterline: state.waterline,
-    gz: (bWorldX - KG * sinT) * (state.volume / uprightVolume),
+    gz: bWorldX - KG * sinT,
     body: { bx: state.bx, bz: state.bz },
+    worldCenter: state.worldCenter,
   };
 }

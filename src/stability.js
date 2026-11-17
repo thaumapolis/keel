@@ -25,7 +25,7 @@
  * survive refinement. See sections.js for the full reasoning and the cost.
  */
 
-import { floatState, polygonHydrostatics, rightingArmAt } from "./sections.js";
+import { buildHeel, FloatFailure, floatState, heelAt, rightingArmAt } from "./sections.js";
 
 const DEG = Math.PI / 180;
 
@@ -37,7 +37,11 @@ const DEG = Math.PI / 180;
  * failure is which, instead of swallowing everything.
  */
 function hitWillFloat(error) {
-  return /is not achievable/.test(error.message);
+  // Matches the two messages that describe a genuine limit of what this hull can
+  // do at this loading -- and deliberately NOT the NOTHING_TO_INTEGRATE message,
+  // which describes a defect. A sweep that swallowed that one would report a
+  // clean end-of-range where the code is actually broken.
+  return /is not achievable|exceeds this/.test(error.message);
 }
 
 /**
@@ -55,7 +59,19 @@ export const SEAWATER_TONNES_PER_CUBIC_METRE = 1.025;
  * constant-displacement solves below are all anchored to it.
  */
 export function uprightState(hull, options) {
-  const state = polygonHydrostatics(hull, 0, hull.depth, options);
+  // Upright at the deck: angle 0, waterline at the top of the hull. No waterline
+  // bisection is needed because the waterline is already known -- at angle 0 it
+  // is centreline-flat, and full depth is by definition the whole hull -- so this
+  // is one quadrature evaluation rather than sixty.
+  //
+  // This function used to call polygonHydrostatics, which sections.js never
+  // exported: the import threw at module load, so stability.js could not be
+  // imported AT ALL, by anything. It sat undetected across three commits because
+  // no test imported it -- the suite exercised hull.js and sections.js directly
+  // and never went through the layer that composes them. Hence the import check
+  // now added in tests/stability.test.mjs: a module that cannot load is the
+  // cheapest possible failure and the most expensive one to leave in.
+  const state = heelAt(buildHeel(hull, 0, options), hull.depth);
   if (!state) throw new Error("uprightState: hull floats with zero volume at full depth");
   return state;
 }
@@ -68,10 +84,26 @@ export function uprightState(hull, options) {
  */
 export function floatStateAt(hull, angleRad, displacementVolume, options) {
   const state = floatState(hull, angleRad, displacementVolume, options);
-  if (!state) {
+  if (state.failure !== undefined) {
+    const deg = (angleRad * 180 / Math.PI).toFixed(1);
+    if (state.failure === FloatFailure.NOTHING_TO_INTEGRATE) {
+      // A bug in the caller or the heel data, not a fact about the sea state:
+      // there was no column at all to integrate. Raise loudly rather than
+      // reporting a limit, because a limit would be a lie about the ship.
+      throw new Error(
+        `floatStateAt: no hull geometry to integrate at ${deg} deg.`,
+      );
+    }
+    if (state.failure === FloatFailure.TOO_FULL) {
+      throw new Error(
+        `floatStateAt: displacement ${displacementVolume.toFixed(3)} m3 exceeds this ` +
+        `hull's whole volume of ${state.maxVolume.toFixed(3)} m3, so it does not float ` +
+        `at any angle.`,
+      );
+    }
     throw new Error(
       `floatStateAt: displacement ${displacementVolume.toFixed(3)} m3 is not achievable ` +
-      `at ${(angleRad * 180 / Math.PI).toFixed(1)} deg for this hull.`,
+      `at ${deg} deg for this hull (best ${state.maxVolume.toFixed(3)} m3).`,
     );
   }
   return state;
@@ -88,7 +120,8 @@ export function floatStateAt(hull, angleRad, displacementVolume, options) {
  */
 export function rightingArm(hull, angleRad, KG, displacementVolume, options) {
   const hit = rightingArmAt(hull, angleRad, KG, displacementVolume, options);
-  if (!hit) return null;
+  if (hit === null) return null;
+  if (hit.failure !== undefined) return hit;
   return {
     gz: hit.gz,
     heelRad: angleRad,
@@ -126,7 +159,7 @@ export function gzCurve(hull, KG, displacementVolume, { stepDeg = 2, maxDeg = 18
       vanishedAt = deg;
       break;
     }
-    if (!hit) {
+    if (hit === null || hit.failure !== undefined) {
       vanishedAt = deg;
       break;
     }
