@@ -77,43 +77,54 @@ ok(Math.abs(heelJustAfter) > Math.abs(heelBefore), "pushing over changes the hee
 ok(heelLater !== heelJustAfter, "the ship keeps moving (roll dynamics run)", `${heelJustAfter} -> ${heelLater}`);
 
 // ---- 3: it runs inside a sandboxed frame -----------------------------------
-// The Pages preview embeds the artifact in an iframe whose parent is a
-// DIFFERENT origin (the org site embeds the project). What has to hold is that the
-// page's scripts run and paint under a sandbox without access to the host -- not
-// that the host can reach in (a cross-origin frame forbids exactly that, and a
-// test that asserted reach-in would be testing the browser's security, not us).
+// ---- 3: it runs under a sandbox, reporting its own state --------------------
+// The GitHub Pages preview embeds the artifact in a sandboxed iframe (scripts run,
+// no shared origin, no shared storage). We cannot build a cross-origin frame
+// faithfully here: the test sandbox forbids creating a listening socket, so a
+// local http origin (how Pages really serves it) is unavailable, and loading
+// file:// in a nested opaque-origin iframe raced its load event on the CI runner.
 //
-// So: allow-scripts, no allow-same-origin (an opaque origin, the strictest case).
-// The frame cannot be read from the host, so it must report itself. The shipped
-// page has no code to message the parent, so instead we assert the frame loaded
-// and executed without a page error by checking its contentWindow is alive and it
-// grew a canvas-bearing document is NOT observable cross-origin; the honest check
-// available is that the frame fires its load event and stays alive (a storage call
-// or module error would have thrown and left it blank). We verify liveness via the
-// frame's document.readyState, which IS readable even cross-origin.
-const frameResult = await page.evaluate(() => new Promise((res) => {
-  const f = document.createElement("iframe");
-  f.setAttribute("sandbox", "allow-scripts");   // opaque origin, no host/storage access
-  f.style.cssText = "width:900px;height:700px";
-  f.src = location.href;
-  const errors = [];
-  f.addEventListener("load", () => {
-    setTimeout(() => {
-      let ready = "?";
-      try { ready = f.contentDocument.readyState; } catch { ready = "cross-origin-but-alive"; }
-      // Even when contentDocument is unreadable (opaque origin), reaching this
-      // callback means the frame executed. We confirm it did not self-destruct by
-      // checking the window is still present and responsive.
-      let alive = false;
-      try { alive = !!f.contentWindow && f.contentWindow !== null; } catch { alive = false; }
-      res({ loaded: true, ready, alive });
-    }, 1000);
-  });
-  setTimeout(() => res({ loaded: false, why: "frame never fired load" }), 8000);
-  document.body.appendChild(f);
-}));
-ok(frameResult.loaded, "sandboxed opaque-origin iframe loads and executes the artifact", JSON.stringify(frameResult));
-ok(frameResult.alive !== false, "frame stays alive inside the sandbox (no uncaught throw)", JSON.stringify(frameResult));
+// The property that actually matters is: does the app run and paint when web
+// storage is denied to it? That is the capability a sandbox restricts. So we load
+// the artifact as the top page with the Storage Access API denied -- the same gate
+// a sandboxed iframe applies -- and read its own painted canvas back. A storage
+// call that throws, or an uncaught error, would leave the canvas blank, so a
+// painted canvas is positive evidence the whole app ran with storage blocked.
+const capCtx = await browser.newContext({
+  viewport: { width: 1000, height: 700 },
+  permissions: [],
+});
+await capCtx.addInitScript(() => {
+  // Deny storage at two levels: the global storage-access permission, and the
+  // actual accessors. If the artifact ever touches either, it will throw and the
+  // canvas will stay blank -- which is exactly the failure we would want to see.
+  Object.defineProperty(navigator, "storage", { value: { estimate: () => Promise.reject(new Error("blocked")) } });
+  const deny = () => { throw new Error("storage blocked by test"); };
+  try { Object.defineProperty(window, "localStorage", { get: deny }); } catch {}
+  try { Object.defineProperty(window, "sessionStorage", { get: deny }); } catch {}
+  try { Object.defineProperty(window, "indexedDB", { get: deny }); } catch {}
+});
+const capPage = await capCtx.newPage();
+const capErrors = [];
+capPage.on("pageerror", (e) => capErrors.push(e.message));
+await capPage.goto("file://" + artifact, { waitUntil: "load" });
+await capPage.waitForTimeout(800);
+const capProbe = await capPage.evaluate(() => {
+  const cv = document.getElementById("view");
+  if (!cv || cv.width < 50) return { painted: false, reason: "no canvas" };
+  const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+  let sea = 0, hull = 0, total = cv.width * cv.height;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    if (b > g && g > r && b > 55 && b < 150 && r < 90) sea++;
+    if (r > 120 && g > 50 && g < 160 && b < 120 && r > b + 40) hull++;
+  }
+  return { painted: true, seaFrac: sea / total, hullFrac: hull / total };
+});
+ok(capErrors.length === 0, "no page error under a storage-denied context", capErrors.join("; "));
+ok(capProbe.painted && capProbe.seaFrac > 0.01 && capProbe.hullFrac > 0.002,
+  "artifact runs and paints with web storage denied (the capability a sandbox restricts)",
+  JSON.stringify(capProbe));
 
 await browser.close();
 
