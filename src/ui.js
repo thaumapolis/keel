@@ -93,6 +93,7 @@ function paintView(frame) {
     height: bufferHeight,
     deckPolys: frame.geometry.deckPolys,
     waterplane: frame.geometry.waterplane,
+    hullQuads: frame.geometry.hullQuads,
     buoyancy: frame.buoyancy,
     gravity: frame.gravity,
   });
@@ -172,9 +173,10 @@ function updateWords() {
   const s = state.summary;
   const gmWord = s.initialGM > 0.15 ? "stiff" : s.initialGM > 0 ? "tender" : "will loll";
   el("liveText").innerHTML =
-    `A ${gmWord} ship at ${Math.round(state.draftFrac * 100)}% load. The blue sheet is the ` +
-    `water's surface inside the hull — the <b>waterplane</b>. The cyan dot is where the water ` +
-    `pushes up; the gold dot is where the weight pulls down.`;
+    `A ${gmWord} ship at ${Math.round(state.draftFrac * 100)}% load, heeled ${Math.round(Math.abs(state.heelDeg))}°. ` +
+    `The bright cyan ring is where the water cuts the hull — the <b>waterplane</b>. The blue dot ` +
+    `is where all the water's push acts (centre of buoyancy); the gold dot is where the weight ` +
+    `acts (centre of gravity).`;
   const pk = s.maxGz != null ? s.maxGz.toFixed(2) : "0";
   el("curveText").innerHTML =
     `Righting arm rises to <b>${pk} m</b> near <b>${s.maxGzAtDeg}°</b>, then the hull can't` +

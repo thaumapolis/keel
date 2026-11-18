@@ -1,0 +1,2357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Keel — why a ship rights itself</title>
+<style>
+:root{
+  --bg:#0d1622; --panel:#131f2e; --ink:#e8eef6; --dim:#9fb0c4; --line:#25344a;
+  --sea:#3f7d92; --warm:#e0784a; --gold:#ffd878; --cyan:#7ec8f0; --ok:#79d69b; --bad:#f08a7a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+#app{max-width:1120px;margin:0 auto;padding:10px 14px 40px}
+#masthead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:8px 2px 12px}
+#masthead h1{font-size:1.35rem;margin:0;letter-spacing:.3px}
+#masthead p{margin:0;color:var(--dim);font-size:.9rem;flex:1 1 240px}
+#stage{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+canvas#view{display:block;width:100%;height:auto;aspect-ratio:16/10;touch-action:none;cursor:grab}
+@media (orientation:portrait){canvas#view{aspect-ratio:4/3}}
+canvas#view:active{cursor:grabbing}
+#badge{position:absolute;top:10px;left:12px;right:12px;font-size:.82rem;color:var(--ink);
+  background:#0b1420cc;border:1px solid var(--line);border-radius:8px;padding:6px 10px;max-width:calc(100% - 24px)}
+#badge b{color:var(--cyan);font-variant-numeric:tabular-nums}
+#verdict{font-weight:600}
+#verdict.ok{color:var(--ok)} #verdict.bad{color:var(--bad)}
+#hint{position:absolute;top:10px;right:12px;font-size:.78rem;color:var(--dim);
+  background:#0b1420cc;border:1px solid var(--line);border-radius:8px;padding:5px 9px}
+@media (max-width:640px){#hint{display:none} #badge{top:auto;bottom:10px}}
+#grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:0 0 8px}
+canvas#curve{display:block;width:100%;height:auto;aspect-ratio:16/7;touch-action:none}
+.ctrl{margin:10px 0}
+.ctrl label{display:flex;justify-content:space-between;font-size:.9rem;margin-bottom:4px}
+.ctrl output{color:var(--cyan);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;height:34px;accent-color:var(--sea)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+button.big{flex:1 1 120px;background:#1a2b40;color:var(--ink);border:1px solid var(--line);
+  border-radius:10px;padding:12px;font-size:.95rem;cursor:pointer}
+button.big:active{background:#24384f}
+.expl{color:var(--dim);font-size:.85rem;margin:8px 0 0}
+#explain p{margin:8px 0;color:#c8d4e2}
+#explain b{color:var(--ink)}
+.term{color:var(--cyan)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:.82rem;color:var(--dim);margin-top:8px}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:5px;vertical-align:middle}
+@media (min-width:840px){
+  #grid{grid-template-columns:1.15fr .85fr}
+  #lower{grid-column:1 / -1}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="masthead">
+    <h1>Keel</h1>
+    <p>Push a ship over and let go. Watch whether it comes back — and see exactly why.</p>
+  </header>
+
+  <div id="stage">
+    <canvas id="view" aria-label="Three-dimensional view of a ship heeled over in the water"></canvas>
+    <div id="badge">
+      <span id="heelOut">0°</span> heel · righting arm <b id="gzOut">0.00</b> m ·
+      <span id="verdict" class="ok">will right</span>
+    </div>
+    <div id="hint" data-card-suppress>drag to roll · pinch/scroll to zoom</div>
+  </div>
+
+  <div id="grid">
+    <div class="card" id="viewCard">
+      <h2>What you're seeing</h2>
+      <p id="liveText">A ship, heeled over. The blue sheet is the water's surface inside the hull — the <b>waterplane</b>. The cyan dot is where the water pushes up; the gold dot is where the weight pulls down.</p>
+      <div class="legend">
+        <span><i style="background:#5ac8ff"></i>centre of buoyancy (water pushes here)</span>
+        <span><i style="background:#ffd878"></i>centre of gravity (weight pulls here)</span>
+      </div>
+      <p class="expl">When you tip the ship, its underwater shape changes, so the water's push slides to the low side while the weight stays put. Up on one side, down on the other — that pair spins the hull back upright. The gap between the two dots, measured sideways, is the <b>righting arm</b>.</p>
+    </div>
+
+    <div class="card">
+      <h2>Righting arm vs heel angle</h2>
+      <canvas id="curve" aria-label="Graph of righting arm against heel angle"></canvas>
+      <p class="expl" id="curveText"></p>
+    </div>
+
+    <div class="card" id="lower">
+      <h2>Change the ship</h2>
+      <div class="ctrl">
+        <label for="draft">How loaded <output id="draftOut">55%</output></label>
+        <input id="draft" type="range" min="25" max="80" step="1" value="55" aria-label="How loaded, as percent of hull depth">
+      </div>
+      <div class="ctrl">
+        <label for="kg">How high the weight sits <output id="kgOut">60%</output></label>
+        <input id="kg" type="range" min="10" max="115" step="1" value="60" aria-label="Centre of gravity height, as percent of the capsizing limit">
+      </div>
+      <div class="row">
+        <button id="pushBtn" class="big" type="button">Push over &amp; release</button>
+        <button id="levelBtn" class="big" type="button">Right it</button>
+      </div>
+      <p class="expl" id="kgExpl"></p>
+    </div>
+  </div>
+
+  <section class="card" id="explain">
+    <h2>Reading it in plain words</h2>
+    <p><b>The water's push</b> always acts through the centre of the underwater blob — the <span class="term">centre of buoyancy</span>. Tip the ship and that blob changes shape, so its centre slides toward the dipped side.</p>
+    <p><b>Stiffness (<span class="term">GM</span>)</b> is how eagerly the ship stands back up. A wide, shallow hull is stiff: big righting arm, snaps upright fast. A narrow, top-heavy one is tender: small arm, leans a long way back — or not at all.</p>
+    <p id="criticalText"></p>
+    <p>Push the weight above that limit and the ship <b>lolls</b>: upright is now the worst position, and it settles over to one side instead of coming back.</p>
+  </section>
+</div>
+<script>
+/**
+ * quad.js -- Gauss-Legendre nodes and weights, shared by every integrator here.
+ *
+ * Extracted from hull.js and sections.js, which each carried their own identical
+ * copy. The duplication only became visible when the single-file bundler refused
+ * to concatenate two top-level `gaussLegendre` declarations -- which is precisely
+ * the failure it exists to catch, since two same-named top-level consts in one
+ * scope is a blank page. Shared now, so the numerical reasoning lives in one
+ * place and cannot drift between the two call sites.
+ */
+
+function legendre(n, x) {
+  // Recurrence gives P_n and P_{n-1}; the derivative identity
+  //     (1 - x^2) P_n'(x) = n (P_{n-1}(x) - x P_n(x))
+  // needs P_{n-1} from BEFORE the last update. Writing it with the wrong sign, or
+  // reading `previous` after the loop has advanced it, yields a derivative off by
+  // a factor and the root iteration converges to the wrong place.
+  let previous = 1;
+  let current = x;
+  for (let k = 2; k <= n; k += 1) {
+    const next = ((2 * k - 1) * x * current - (k - 1) * previous) / k;
+    previous = current;
+    current = next;
+  }
+  return {
+    value: current,
+    derivative: (n * (previous - x * current)) / (1 - x * x),
+  };
+}
+
+/**
+ * Nodes and weights on [-1, 1] for the requested order, coerced up to even.
+ *
+ * Generated, not transcribed: a hand-copied weights table in an earlier revision
+ * summed to 2.4488 instead of 2, an 11% error on the cheapest check that exists --
+ * "integrate the constant 1 over [-1, 1]" -- and because the rule fed the Cb
+ * calibration, every hull built from it displaced ~22% wrong while still looking
+ * exactly like a hull.
+ *
+ * Order coerced to even: nodes come in +-pairs, so enumerating ceil(n/2) pairs on
+ * an odd order yields n+1 nodes with the one nearest zero double-counted
+ * (gaussLegendre(61) summed to 2.0511, a 2.5% error invisible unless checked). Odd
+ * orders are corrected, and the weight-sum assertion below catches a regression.
+ * Callers must iterate nodes.length, not their requested order: indexing to the
+ * requested order read one past the array and produced a -515% volume that looked
+ * like divergent numerics and was an index misalignment.
+ */
+function gaussLegendre(order) {
+  const even = order % 2 === 0 ? order : order + 1;
+  const nodes = [];
+  const weights = [];
+  for (let i = 0; i < even / 2; i += 1) {
+    let x = Math.cos((Math.PI * (i + 0.75)) / (even + 0.5));
+    for (let iteration = 0; iteration < 100; iteration += 1) {
+      const { value, derivative } = legendre(even, x);
+      const step = value / derivative;
+      x -= step;
+      if (Math.abs(step) < 1e-16) break;
+    }
+    const { derivative } = legendre(even, x);
+    const weight = 2 / ((1 - x * x) * derivative * derivative);
+    nodes.push(-x, x);
+    weights.push(weight, weight);
+  }
+  const weightSum = weights.reduce((total, w) => total + w, 0);
+  if (Math.abs(weightSum - 2) > 1e-12) {
+    throw new Error(`gaussLegendre(${order} -> ${even}): weights sum to ${weightSum}, expected 2`);
+  }
+  return { nodes, weights };
+}
+
+
+
+/**
+ * hull.js — the ship's shape, and the hydrostatics that fall out of it.
+ *
+ * The form is a table of transverse station OUTLINES, lofted along the hull. This
+ * is a deliberate detour from the obvious implementation, and the reason is in
+ * the "Why not a closed-form separable profile" note below: the obvious form is
+ * easy to integrate and cannot express the mechanism the whole project is about.
+ *
+ * One representation, several consequences. Displaced volume, the centre of
+ * buoyancy, waterplane area and the waterplane's second moment are all summed
+ * over the SAME polygons. Nothing is read out of a stability table and nothing is
+ * a hand-tuned "balance" constant. That is what makes the behaviour honest: GM
+ * emerges from the shape, so a broad, shallow hull is stiff and a narrow, deep
+ * one is tender, for the same reason they are in real life.
+ *
+ * Conventions used by every module in this project:
+ *   x to starboard, y forward, z up, metres.
+ *   Origin: centreline, on the keel (lowest point of the hull).
+ *   The centre of flotation is NOT the origin and is never assumed to be.
+ *
+ * A right-handed frame with z up: a POSITIVE roll tips the STARBOARD side down.
+ * Stated because the classic failure is a sign error that yields a ship which
+ * rights itself by leaning further over -- and which looks fine in a screenshot.
+ */
+
+/**
+ * Fraction of the depth at which the bilge curve saturates at full breadth,
+ * amidships. Below it the section narrows toward the keel; above it the sides run
+ * up to the deck.
+ *
+ * Load-bearing in two non-obvious ways:
+ *   - It must stay below 1 with margin, so a full-depth cut lands strictly inside
+ *     the vertical part rather than on the saturation knee, where "is this column
+ *     already at full breadth?" would be decided by floating-point equality.
+ *   - It CAPS the reachable block coefficient: the fullest hull this form can
+ *     make is the wall-sided one, and asking for a fuller Cb than that is asking
+ *     for a hull that does not exist. The solver refuses with the cap in the
+ *     message rather than bisecting off the end of its bracket.
+ */
+const FLANGE_FRACTION = 0.9;
+
+/**
+ * Bounds of the longitudinal taper exponent, which is SOLVED so that the declared
+ * block coefficient is the displacement that actually results.
+ *
+ * At MIN the hull is wall-sided along its whole length -- a barge, the fullest
+ * thing this form can be, so it sets the ceiling on blockCoefficient. At MAX the
+ * ends are so fine the hull barely displaces. See taperExponent, which checks the
+ * ceiling instead of bisecting past it.
+ */
+const TAPER_EXPONENT_MIN = 0.01;
+const TAPER_EXPONENT_MAX = 20;
+
+/**
+ * Stations per unit length used when lofting the form into outlines.
+ *
+ * A density, not a count, so a long hull gets more frames than a short one at the
+ * same fidelity: with a fixed count the frame spacing scales with length and a
+ * 24 m hull would be coarser than a 6 m one for no reason. 16/m gives 61 frames
+ * across the 12 m reference hull.
+ */
+const STATIONS_PER_METRE = 5;
+
+/** Points along one half of a section outline, from the keel up to the deck. */
+const SECTION_SAMPLES = 97;
+
+/**
+ * How this hull form got here -- and a correction to this note's own conclusion.
+ *
+ * The form's shape is NOT the interesting part; the interesting part is that for
+ * three revisions it was WRONG in a way no error table showed. This note records
+ * the history honestly, including where this comment itself was wrong, because a
+ * note that overstates what shipped is the same failure mode the code had.
+ *
+ * The original form was the tidy separable one:
+ *
+ *   halfBreadth(u, z) = (beam/2) * longitudinalTaper(u) * verticalTaper(z)
+ *
+ * with the SAME longitudinalTaper weighting the waterline and the displacement.
+ * Its measured failure, on that code (these numbers describe the OLD form, not the
+ * one below, and I have not re-verified them since):
+ *
+ *   - Waterplane outlines at every draft were the deck outline scaled -- a pure
+ *     dilation, area/maxBreadth constant across drafts.
+ *   - GZ was symmetric about 90 deg and peaked at 90 deg for every hull and every
+ *     KG, so the "angle of maximum GZ" readout could not move.
+ *   - prismaticCoefficient had no effect at the waterline: a control named after a
+ *     real number did nothing to it.
+ *
+ * The diagnosis that got out of it was "separability is the problem". That is the
+ * part this note had wrong. Separability is not a defect -- a prismatic barge is
+ * separable and stable. What actually broke was that the WATERLINE weighting and
+ * the DISPLACEMENT weighting were the same function, which forces the waterplane
+ * second moment I to track volume V, so BM = I/V loses shape dependence. The fix
+ * is one line, not a representation change: give the waterline its OWN weighting,
+ * stationFraction = taper^(1+WATERPLANE_FLARE), so displacement weights stations by
+ * taper (mean 0.942) while I weights them by stationFraction^3 (mean 0.811). The
+ * current halfBreadth is STILL separable -- d2(ln b)/du dw is ~1e-11, i.e. it
+ * factors -- and that is fine. See the halfBreadth comment for the measurement and
+ * for the two genuinely-broken rejected attempts (a scaling bilge that cancels, and
+ * an additive bilge whose columns split into two wet bands).
+ *
+ * So the current form is separable AND lofted into station outlines -- the outlines
+ * are for clipping and rendering a real polygon surface, not for escaping
+ * separability. Mechanism, in one sentence: two different longitudinal weightings.
+ */
+
+/** Gauss-Legendre nodes and weights on [-1, 1], generated and checked. */
+// Means over u and over z in [0,1], cached at module scope: the nodes never change
+// and these run once per bisection step of the block-coefficient solve.
+const U_RULE = gaussLegendre(120);
+const Z_RULE = gaussLegendre(160);
+
+/**
+ * Fraction of half-beam by which the bilge pulls the section inward at the keel.
+ * See Hull.halfBreadth for why the bilge has to be additive rather than a scaled
+ * power profile.
+ */
+/**
+ * How much extra the fine ends lose at the waterline beyond their share of
+ * displacement. WATERPLANE_FLARE = 0 makes waterplane area track displacement and
+ * removes the mechanism the project is about (see halfBreadth); it is the single
+ * parameter that turns the physics on and off, which is why it is a named
+ * constant rather than a 1 inside a pow().
+ *
+ * Kept small. It is an exponent on the taper, so large values make the ends
+ * vanish from the waterplane almost entirely and the GZ curve develops a very
+ * early, very sharp knee -- physically it is the difference between a normal flare
+ * and a scow, and past about 0.6 the shape stops reading as a ship hull.
+ */
+const WATERPLANE_FLARE = 0.35;
+
+/**
+ * How much lower the saturation height sits at the ends than amidships, as a
+ * fraction of the FLANGE_FRACTION run. Also the reason the widest point is below
+ * the deck even amidships: at 0.10 the midships section reaches full breadth at
+ * 0.9 of the depth and runs vertical for the last tenth. See
+ * Hull.saturationFraction for why going any higher breaks the model.
+ */
+const TAPER_SPARING = 0.10;
+
+/** Mean of (1 - s^2)^p over s in [-1, 1], in closed form: B(1/2, p+1) / 2. */
+function betaMean(p) {
+  return Math.exp(Math.log(Math.PI) / 2 + logGamma(p + 1) - logGamma(p + 1.5)) / 2;
+}
+
+/** Log-Gamma via Lanczos, needed because exponents reach 20 where Gamma overflows. */
+const LANCZOS_G = 7;
+const LANCZOS_COEFFICIENTS = [
+  0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+  771.32342877765313, -176.61502916214059, 12.507343278686905,
+  -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+];
+
+function logGamma(x) {
+  if (x < 0.5) {
+    // Euler's reflection formula, to keep the argument in the stable range.
+    return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  }
+  const z = x - 1;
+  let series = LANCZOS_COEFFICIENTS[0];
+  for (let i = 1; i < LANCZOS_G + 2; i += 1) {
+    series += LANCZOS_COEFFICIENTS[i] / (z + i);
+  }
+  const t = z + LANCZOS_G + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(series);
+}
+
+class Hull {
+  /**
+   * @param length   metres, stern to bow.
+   * @param beam     metres, the maximum breadth anywhere on the hull.
+   * @param depth    metres, keel to deck.
+   * @param blockCoefficient  displaced volume / (length*beam*depth). Solved for,
+   *   not labelled: the taper exponent is chosen so the form displaces this.
+   * @param prismaticCoefficient  sets how fast the bilge fills out, i.e. a hard
+   *   chine versus a full round bilge.
+   */
+  constructor(p) {
+    this.length = p.length;
+    this.beam = p.beam;
+    this.depth = p.depth;
+    this.blockCoefficient = p.blockCoefficient;
+    this.prismaticCoefficient = p.prismaticCoefficient ?? 0.9;
+
+    for (const key of ["length", "beam", "depth"]) {
+      if (!(this[key] > 0)) throw new Error(`Hull.${key} must be > 0, got ${this[key]}`);
+    }
+    if (!(this.blockCoefficient > 0 && this.blockCoefficient < 1)) {
+      throw new Error(`blockCoefficient must be in (0,1), got ${this.blockCoefficient}`);
+    }
+    if (!(this.prismaticCoefficient > 0 && this.prismaticCoefficient <= 1.2)) {
+      throw new Error(`prismaticCoefficient must be in (0,1.2], got ${this.prismaticCoefficient}`);
+    }
+  }
+
+  /** Longitudinal fraction u in [0,1] to station index. */
+  get stationCount() {
+    return Math.max(3, Math.round(this.length * STATIONS_PER_METRE) | 1);
+  }
+
+  /** y position of station i, centred on 0. */
+  stationY(i) {
+    const n = this.stationCount;
+    return -this.length / 2 + (this.length * i) / (n - 1);
+  }
+
+  /**
+   * Longitudinal taper at fraction u: 1 amidships, closing toward the ends, with
+   * the exponent SOLVED so the declared block coefficient is the displacement that
+   * results.
+   *
+   * The first version picked this exponent from taste and left `blockCoefficient`
+   * as a label on the side: a hull declared Cb = 0.80 displaced as 0.56, a 30%
+   * lie, and the whole point of Cb is that it *is* the displacement.
+   */
+  longitudinalTaper(u) {
+    const s = 2 * u - 1;
+    const base = Math.max(0, 1 - s * s);
+    return Math.pow(base, this.taperExponent / 2);
+  }
+
+  /**
+   * The transverse section outline at longitudinal fraction u, as an array of
+   * {x, z} points running starboard deck -> down the starboard side -> along the
+   * keel -> up the port side -> port deck. Closed, symmetric about x = 0.
+   *
+   * A SAMPLED VIEW of the hull form, not the form itself: every x here is
+   * halfBreadth(u, z), so the outline the renderer draws and the sections the
+   * hydrostatics integrate are read from one function and cannot drift apart.
+   * (An earlier note called this "the hull form" and credited it with a
+   * "1/(1+0.5*taper)" bilge scaling that appears nowhere in the code -- both
+   * false; removed rather than left plausible.) SECTION_SAMPLES controls how
+   * finely the outline traces halfBreadth; it affects the drawn silhouette and
+   * any shoelace taken over it, not the column-integrated volume.
+   */
+  outline(u) {
+    const taper = this.longitudinalTaper(u);
+    if (taper <= 0) return [];
+    const points = [];
+    // Starboard side from deck down to the keel, then mirrored back up. Sampled in
+    // z so the outline is single-valued in z, which is what lets a waterline cut
+    // be a single interval per column -- see columnBounds in sections.js for what
+    // breaks if that assumption is violated.
+    //
+    // The x values come from halfBreadth, the same function the hydrostatics
+    // integrate. An earlier revision kept a separate sectionShape() here and let
+    // the mesh and the physics each derive breadth their own way, which is exactly
+    // the drift this project keeps getting bitten by.
+    for (let i = SECTION_SAMPLES - 1; i >= 0; i -= 1) {
+      const z = (this.depth * i) / (SECTION_SAMPLES - 1);
+      points.push({ x: this.halfBreadth(u, z), z });
+    }
+    for (let i = 1; i < SECTION_SAMPLES; i += 1) {
+      const z = (this.depth * i) / (SECTION_SAMPLES - 1);
+      points.push({ x: -this.halfBreadth(u, z), z });
+    }
+    return points;
+  }
+
+  /** How fast the bilge fills toward the flange: 1 is a straight-sided V. */
+  get bilgeExponent() {
+    return 0.35 + (1 - this.prismaticCoefficient) * 1.4;
+  }
+
+  /**
+   * Half-breadth at longitudinal fraction u and height z above the keel. Zero
+   * outside the hull. THIS IS THE HULL FORM.
+   *
+   *   b(u, z) = (beam/2) * stationFraction(u) * profile(z)
+   *
+   * profile(z) = (z/depth)^bilgeExponent, monotone, 0 at the keel, 1 at the deck.
+   * stationFraction(u) <= 1 is the deck breadth fraction, defined below.
+   *
+   * A correction to an earlier version of this comment, recorded because the
+   * mistake is the same one the project keeps making -- trusting a claim about
+   * shape that was never checked against the shipped code. This block used to say
+   * the form was "non-separable", citing a mixed partial of 9.35. Measured, that
+   * is FALSE for this expression. d2(ln b)/du dw -- the very "zero iff it factors"
+   * test this file prescribes -- is ~1e-11 at every point, fine ends included: the
+   * form factors exactly. (The partial d2b/du dw without the log is nonzero
+   * off-midships, but that is not the separability test; a product g(u)*h(z) has
+   * a nonzero plain mixed partial the moment either factor varies. Only the LOG
+   * partial is the iff test.) The 9.35 belongs to rejected attempt 2 below, which
+   * is a different expression that is not in this file.
+   *
+   * So: separable, and that is NOT the defect. Separability was never the problem
+   * worth solving -- an ordinary prismatic hull is separable and perfectly stable.
+   * The problem was that the waterplane weighting equalled the displacement
+   * weighting (stationFraction == longitudinalTaper), which is what pins BM = I/V
+   * to a shape-independent value. The fix that matters is that stationFraction is
+   * taper^(1+WATERPLANE_FLARE), NOT taper, so:
+   *   - displacement weights each station by taper       -> mean(taper)     = 0.942
+   *   - waterplane 2nd moment weights each by stationFraction^3 -> mean(sf^3) = 0.811
+   * and the two means differ, so BM moves with hull SHAPE. That asymmetry -- not
+   * non-separability -- is the mechanism, and it is what tests/hydrostatics.test.mjs
+   * asserts. Pinning the log-partial to zero would have been pinning the WRONG
+   * thing; the test pins the weighting split instead.
+   *
+   * Two failed attempts, both instructive, neither of them this expression:
+   *
+   *   1. b = (beam/2)*taper(u)*min(1, (z/fl(u))^be): bilge radius scaled along the
+   *      hull. The min caps the section at taper(u), so fl(u) cancels out of the
+   *      waterline and the whole family is separable in a way that dilates the
+   *      waterplane (area/maxBreadth constant across drafts). Confirmed by the log
+   *      partial ~5e-11 for flat, linear, exponential, piecewise and kinked fl(u):
+   *      no choice of fl(u) escapes it.
+   *
+   *   2. b = min(widest(u), widest(u) + K*(profile(z)-1)): an additive bilge. Genuinely
+   *      log-separable? No -- this is the one whose plain mixed partial measured
+   *      9.35, but it is GEOMETRICALLY broken: the section clamps at its widest
+   *      BELOW the deck, so a column just inside widest(u) exists near the keel AND
+   *      in the clamped band, i.e. TWO disjoint wet intervals. Single-interval
+   *      columns are the precondition for floatWaterline's bisection (see
+   *      columns.js), so this traded a subtle wrongness for a structural one: the
+   *      lofted solid was 3.5% off its own intended area at u=0.1 while
+   *      halfBreadth reported the columns correct -- both true, because they
+   *      integrated different solids.
+   *
+   * What the form is required to have -- every clause load-bearing:
+   *   - b(u, deck) = (beam/2)*stationFraction(u), continuous in u, so `beam` is
+   *     the real maximum breadth and the deck outline is a clean curve.
+   *   - profile(0) = 0 and profile monotone, so every column is exactly ONE
+   *     interval for every u (the failure mode of attempt 2).
+   *   - stationFraction != longitudinalTaper, or BM loses shape dependence -- the
+   *     actual mechanism, and the thing that WAS broken.
+   */
+  halfBreadth(u, z) {
+    if (z < 0 || z > this.depth || u < 0 || u > 1) return 0;
+    const fraction = this.stationFraction(u);
+    if (fraction <= 0) return 0;
+    return (this.beam / 2) * fraction * this.profile(z);
+  }
+
+  /**
+   * Fraction of the deck's breadth this station has at height z, in [0,1].
+   * Monotone increasing, 0 at the keel, 1 at the deck. The bilge exponent is the
+   * chine-to-round-bilge knob: bilgeExponent near 0.35 is a hard chine (breadth
+   * appears fast just above the keel), near 1 is a straight-sided V.
+   */
+  profile(z) {
+    if (z <= 0) return 0;
+    return Math.pow(z / this.depth, this.bilgeExponent);
+  }
+
+  /**
+   * The station's breadth as a fraction of the deck's, at the waterline.
+   *
+   * taper^(1+WATERPLANE_FLARE) where taper = (1-s^2)^(exponent/2) is the
+   * displacement weighting. The extra factor of taper is the flare: as the ship
+   * rises, the fine ends drop out of the water faster than they lose displacement,
+   * so waterplane area and its second moment no longer track volume. Without it
+   * they do track, BM = I/V has no shape dependence, and the project has nothing
+   * to demonstrate.
+   */
+  stationFraction(u) {
+    return Math.pow(this.longitudinalTaper(u), 1 + WATERPLANE_FLARE);
+  }
+
+  /**
+   * Displaced volume / (L*B*D) for a given taper exponent: the block coefficient
+   * this form achieves. Calibrating Cb means inverting this.
+   *
+   *     mean over u of [ taper(u) * mean over z of sectionShape-at-that-u ]
+   *
+   * The inner z-mean is closed form: sectionShape is min(1, (z/fl)^be), so its
+   * mean over z in [0, depth] is
+   *
+   *   (fl/depth)/(be + 1) + (1 - fl/depth)          when fl <= depth
+   *
+   * verified against 200001-point midpoint integration at nine stations. The outer
+   * u-mean is Gauss-Legendre: the integrand is a sum of powers of (1 - s^2), whose
+   * derivatives blow up at the ends for small exponents -- exactly the fullest
+   * hulls -- and GL puts no node there.
+   */
+  static volumeCoefficientByExponent(exponent, hullShape) {
+    // Volume = L * int over u of [ int over z of b(u,z) dz ], and
+    // Cb = volume/(L*B*D) = mean over u of [ mean over z of b/(B/2) ].
+    //
+    // Both means by Gauss-Legendre. The inner one used to be closed form, which
+    // was possible only because the profile was a pure power of z; with the
+    // additive bilge the inner integral is of a min() and has no tidy closed form,
+    // so it is done by the same rule. The integrand is smooth between the two
+    // saturation heights and has a corner at each, which is the case GL handles
+    // worst, so the node count is checked against a dense reference rather than
+    // trusted -- see the convergence check in tests.
+    const halfBeam = hullShape.beam / 2;
+    const bilgeExponent = hullShape.bilgeExponent;
+    let total = 0;
+    for (let i = 0; i < U_RULE.nodes.length; i += 1) {
+      const u = (U_RULE.nodes[i] + 1) / 2;
+      const taper = Math.pow(Math.max(0, 1 - Math.pow(2 * u - 1, 2)), exponent / 2);
+      if (taper <= 0) continue;
+      // halfBreadth / (beam/2), written the same way the form writes it so the
+      // calibration cannot drift from the shape it calibrates. The inner z-mean of
+      // profile is 1/(be+1) exactly, but it is integrated here rather than
+      // substituted so that the solver's integrand and halfBreadth are the same
+      // expression on the same rule: an earlier revision kept a closed form that
+      // described a bilge 1.6% deeper than the hull actually had, and every Cb
+      // printed afterwards was a confident lie about displacement.
+      const fraction = Math.pow(taper, 1 + WATERPLANE_FLARE);
+      let inner = 0;
+      for (let k = 0; k < Z_RULE.nodes.length; k += 1) {
+        const z = (Z_RULE.nodes[k] + 1) / 2;
+        inner += (Z_RULE.weights[k] / 2) * fraction * Math.pow(z, bilgeExponent);
+      }
+      total += (U_RULE.weights[i] / 2) * inner;
+    }
+    return total;
+  }
+
+  /**
+   * Bisection for the taper exponent that yields the declared block coefficient.
+   * Monotone decreasing -- taper and the per-station z-mean both fall as the ends
+   * get finer -- so bisection converges.
+   */
+  get taperExponent() {
+    if (this._taperExponent !== undefined) return this._taperExponent;
+    // The ceiling has to be checked, not trusted. The fullest hull this form can
+    // make is the wall-sided one; asking for a fuller Cb than that is asking for a
+    // hull that does not exist, and bisecting through it used to settle silently on
+    // the bracket's floor -- the solver "converged", the exponent was 0.01, and the
+    // published displacement was 4.9% low with nothing to say about it.
+    const reachable = Hull.volumeCoefficientByExponent(TAPER_EXPONENT_MIN, this);
+    if (this.blockCoefficient > reachable + 1e-9) {
+      throw new Error(
+        `Hull: blockCoefficient ${this.blockCoefficient} is unreachable for this ` +
+        `form. The fullest hull it can make displaces ${reachable.toFixed(3)} of its ` +
+        `L*B*D box; raise prismaticCoefficient (fuller sections) or accept a finer ` +
+        `block.`,
+      );
+    }
+    let lo = TAPER_EXPONENT_MIN;
+    let hi = TAPER_EXPONENT_MAX;
+    for (let i = 0; i < 60; i += 1) {
+      const mid = (lo + hi) / 2;
+      if (Hull.volumeCoefficientByExponent(mid, this) > this.blockCoefficient) lo = mid;
+      else hi = mid;
+    }
+    this._taperExponent = (lo + hi) / 2;
+    return this._taperExponent;
+  }
+
+  /**
+   * The surface, as frames of points and quads between adjacent frames, ready for
+   * the software renderer.
+   *
+   * Each ring is one station outline, so the mesh and the hydrostatics read the
+   * same outline() function and cannot disagree the way two independent
+   * representations can.
+   */
+  build() {
+    const n = this.stationCount;
+    const ring = this.outline(0.5).length;
+    const points = [];
+    for (let i = 0; i < n; i += 1) {
+      const u = i / (n - 1);
+      const y = this.stationY(i);
+      for (const p of this.outline(u)) points.push({ x: p.x, y, z: p.z });
+    }
+    const quads = [];
+    for (let i = 0; i < n - 1; i += 1) {
+      const a = i * ring;
+      const b = (i + 1) * ring;
+      for (let s = 0; s < ring; s += 1) {
+        const s2 = (s + 1) % ring;
+        quads.push([a + s, a + s2, b + s2, b + s]);
+      }
+    }
+    return { points, quads, ring };
+  }
+}
+
+
+
+
+/**
+ * columns.js -- the transverse column set, as a standalone module.
+ *
+ * Extracted from sections.js so that columnBounds can be tested against the hull
+ * form at EXACT longitudinal positions. While it lived inside sections.js the
+ * only way to reach it was through buildHeel, which places stations at
+ * Gauss-Legendre nodes -- nowhere near the round numbers a test wants -- so the
+ * first attempt at a column-level test compared one heel's bounds against
+ * another heel's x-positions and reported a 100% error that was entirely the
+ * test's own. A seam that cannot be addressed directly produces tests that fail
+ * for reasons unrelated to the code under test.
+ */
+
+
+/**
+ * Body-frame z range in which the hull exists at longitudinal fraction u and
+ * body |x| = absX, or null where the column misses the hull entirely.
+ *
+ * ONE interval per column, and that is a precondition rather than a nicety:
+ * floatWaterline bisects assuming submerged volume is monotone in the waterline,
+ * which holds iff every column is a single interval. A column submerged in two
+ * disjoint bands adds volume as the waterline rises past the lower band and then
+ * LOSES it past the gap, and the bisection converges on a waterline that is not
+ * the waterline.
+ *
+ * Both limits come from inverting the half-breadth ONCE. The section is
+ *
+ *   b(u, z) = widest + K*((z/Zsat)^be - 1)   for z <  Zsat
+ *           = widest                          for z >= Zsat
+ *
+ * with widest = (beam/2)*taper(u), non-decreasing in z and flat from Zsat up. So
+ * the column is everything at or above the single crossing z*, capped at the
+ * deck, and a column wider than the section ever gets misses entirely:
+ *
+ *   bottom = min(Zsat, z*),  top = deck      where  b(u, z*) = absX
+ *
+ * Getting `top` right is not the easy half, and two earlier revisions assumed it
+ * was. They clipped only the bottom and set top to the deck unconditionally,
+ * which reads as correct for the columns that survive and silently mis-states
+ * every column near the section's widest point.
+ */
+function columnBounds(hull, u, absX) {
+  const fraction = hull.stationFraction(u);
+  if (fraction <= 0) return null;
+  const widest = (hull.beam / 2) * fraction;
+  if (absX > widest) return null;
+
+  // Invert widest * (z/depth)^be = absX. profile is monotone from 0 at the keel
+  // to 1 at the deck, so there is exactly one crossing and the column is
+  // everything above it: a single interval, for every u and every absX. That is
+  // what makes floatWaterline's bisection valid, and it is why the form has
+  // profile(0) = 0 rather than a flat bottom.
+  const required = absX / widest;
+  if (required >= 1) return { bottom: hull.depth, top: hull.depth };
+  const bottom = hull.depth * Math.pow(required, 1 / hull.bilgeExponent);
+  return { bottom, top: hull.depth };
+}
+
+/** Columns and their weights for a station at longitudinal fraction u. */
+function stationColumns(hull, u, xs) {
+  return xs.map((x) => columnBounds(hull, u, Math.abs(x)));
+}
+
+
+
+/**
+ * sections.js -- the hydrostatics of a HEELED hull, integrated from the hull form.
+ *
+ * This is the method the project depends on, and it replaced a station-summing
+ * implementation that could not express heel at all. The predecessor computed the
+ * waterplane's transverse second moment from half-breadths at a HORIZONTAL cut,
+ * and heelState() handed it the same unrotated stations whatever the angle, so
+ * the waterplane inertia did not change as the ship heeled (observed: 21.55989 at
+ * both 0 rad and 0.5 rad). Every GZ past a few degrees inherited that: measured
+ * against this file, it was 35% low at 20 deg, 50% low at 30 deg, and NEGATIVE at
+ * 45 deg where the true arm is still slightly positive -- it told the user the
+ * ship was capsizing at an angle where the geometry says it rights itself.
+ *
+ * Why this formulation. A heeled section's submerged region is not single-valued
+ * in body z: once the keel edge emerges, a horizontal line inside it meets the
+ * boundary twice. Any representation that stores a section as "half-breadth as a
+ * function of height" cannot express that, and being correct past the deck-edge
+ * angle is the entire point. So the section is described the other way round --
+ * for each column at body |x|, the range of z in which the hull exists -- and the
+ * waterline simply cuts that range. The z range comes from inverting the declared
+ * hull form, not from a polyline approximation of it, so the only errors left are
+ * column and station spacing, both under direct control and both measured.
+ *
+ * Conventions, matching src/hull.js (x starboard, y forward, z up from keel,
+ * right-handed, so POSITIVE heel tips STARBOARD down):
+ *
+ *     worldX = bodyX*cos + bodyZ*sin
+ *     worldZ = -bodyX*sin + bodyZ*cos
+ *
+ * The sanity check on that reading: the starboard keel point (bodyX = +h,
+ * bodyZ = 0) maps to worldZ = -h*sin < 0 for heel > 0, i.e. below the water
+ * surface at worldZ = 0, so water covers more of the x > 0 side. The waterplane
+ * in body coordinates is therefore
+ *
+ *     bodyZ <= (w + bodyX*sin)/cos
+ *
+ * with w the waterline height at the centreline.
+ *
+ * GZ is the horizontal separation, in the WORLD frame where the water surface is
+ * level, between the buoyancy centre and the centre of gravity:
+ *
+ *     GZ = (B_worldX - G_worldX) * V / V0
+ *
+ * The V/V0 factor is not decoration. GZ is a righting ARM, and the righting
+ * MOMENT is rho*g*V*GZ; comparing moments at a fixed displacement makes the arm
+ * the world offset scaled by the volume ratio. For a wall-sided hull V falls as
+ * cos(theta) while the offset grows, so dropping the factor changes the shape of
+ * the curve, not just its scale.
+ *
+ * Accuracy, measured two ways. Upright volume against an independent
+ * 200001-point double Simpson of the hull form: 0.0002% at nu=nx=801, and the
+ * error falls as the spacing (nu=31 -> -0.20%, 61 -> -0.01%, 121 -> +0.04%).
+ * Against the naive closed form L*B*D*blockCoefficient it plateaus at +0.048%
+ * however fine the grid: that plateau is NOT this file's error, it is
+ * hull.js's block-coefficient solver, whose meanVerticalProfileAt(u) uses a
+ * left-endpoint rectangle rule where the taper is steepest at the keel, so the
+ * exponent it solves for is off. The closed form is the approximation.
+ *
+ * Small-angle behaviour is the sign test: GZ must tend to GM*sin(theta) for a
+ * STABLE hull, so GZ/sin(theta) -> GM > 0.
+ */
+
+/**
+ * Gauss-Legendre nodes and weights on [-1, 1].
+ *
+ * Generated by Newton iteration on the Legendre polynomial rather than
+ * transcribed, and checked on load. The reason is a specific mistake: a
+ * hand-copied table here summed its weights to 2.4488 instead of the required 2
+ * -- an 11% error, catchable by the single cheapest test there is ("integrate the
+ * constant 1") -- and because the rule fed the block-coefficient calibration,
+ * every hull built from it displaced about 22% wrong while still looking exactly
+ * like a hull. Hardcoded constants are code and need the same provenance.
+ */
+/**
+ * Everything about a heel angle that does NOT depend on the waterline: the
+ * column x positions and their z ranges, per station, with Simpson weights.
+ *
+ * This is separated from the waterline evaluation because recomputing it was the
+ * cost of the whole stability model. Solving for the floating waterline needs
+ * ~50 quadrature evaluations, and doing the shape work each time cost 3.46 ms per
+ * evaluation and 145 ms per heel angle -- 8.7 s for a 60-sample GZ curve, which
+ * cannot run in front of a user. Built once per hull and angle, the waterline
+ * solve becomes arithmetic and the curve drops to the tens of milliseconds.
+ */
+/**
+ * Resolution defaults, set from measurement. See the two "measured on its own"
+ * checks in tests/hydrostatics.test.mjs for the method and the numbers.
+ *
+ * The two directions are independent, so each has to be measured with the other
+ * pinned; summed, the larger term hides the smaller one and the trend is
+ * unreadable. Holding nx = 65, the longitudinal term at Cb = 0.62 falls
+ * 5.8e-4 -> 2.1e-4 -> 2.7e-5 -> 1.7e-5 over nu = 15 -> 511. Holding nu = 63, the
+ * transverse term falls 5.4e-4 -> 1.3e-4 -> 5.3e-6 over nx = 65 -> 257. The
+ * transverse direction is the limiting one, which is why the defaults spend the
+ * budget there (nu = 122 stations, nx = 481 columns) rather than going square:
+ * that pair gives 7.3e-6 / 1.2e-5 / 2.1e-6 relative volume error at Cb =
+ * 0.40 / 0.62 / 0.78 for ~140 ms of shape building, which is comfortably inside
+ * the 0.1% the model is quoted to and cheap enough to run for every heel angle.
+ *
+ * The column-boundary inversion (50 bisection steps above) is NOT a limiting
+ * term. Measured at 8 / 16 / 26 / 39 / 50 / 64 / 90 steps across five
+ * resolutions and two block coefficients, the answer is identical from 26 steps
+ * onward and 7.3e-6 -> 7.9e-6 at the defaults between 50 and 200 steps. A plateau
+ * here once had me blaming this inversion for error the transverse quadrature
+ * owned; the way out was to vary one thing at a time.
+ */
+function buildHeel(hull, angleRad, { nu = 122, nx = 481 } = {}) {
+  const sinT = Math.sin(angleRad);
+  const cosT = Math.cos(angleRad);
+
+  // Longitudinal quadrature: Gauss-Legendre on s = 2u - 1, so the stations come
+  // in symmetric pairs about midships. `nu` is rounded up to an even order by
+  // gaussLegendre and the actual count is reported as stationCount; callers must
+  // use stations.length rather than assuming their own nu, because asking for an
+  // odd order silently yields nu + 1 stations. Measured, before that was made
+  // explicit: passing an odd nu produced -5.2% volume where the even neighbour
+  // gave 0.011%.
+
+  //
+  // Not Simpson, and the measurement that decided it is worth keeping. Simpson in
+  // u converged at first order and the error was wholly longitudinal: holding nx
+  // fixed at 121 and 1201 gave the same answer to four figures while nu varied
+  // (nu 11/61/241/601 -> -5.08%, -0.71%, -0.155%, -0.055% at block coefficient
+  // 0.78). The reason is the taper itself: (1 - s^2)^(e/2) has vertical tangents
+  // at both ends, so the integrand is not smooth at u = 0 and u = 1 and
+  // Simpson's fourth-derivative error bound is void exactly there. Gauss-Legendre
+  // puts no node on the endpoints and absorbs the algebraic endpoint behaviour:
+  // measured 3.6e-5 at 40 nodes against Simpson's 2.0e-4 at 2401, and it keeps
+  // improving (8.6e-8 at 640) instead of stalling.
+  //
+  // Also free of a resolution subtlety Simpson had: the old code required an odd
+  // nu so the intervals paired, which is a constraint a caller could violate and
+  // which bought nothing once the rule was replaced.
+  const longitudinal = gaussLegendre(nu);
+  // Transverse quadrature, also Gauss-Legendre, on x = halfBeam * t for t in
+  // [-1, 1]. Simpson across the beam was the original choice and it was the
+  // better one until the longitudinal rule stopped limiting the error; then the
+  // transverse direction became the limit, and it is first-order-ish here for the
+  // analogous reason. columnBounds flips between three regimes -- outside the
+  // hull, inside the tumblehome, inside the maximum breadth -- as |x| crosses the
+  // deck-edge and maximum breadths, so the column height has derivative jumps at
+  // three interior points that no uniform grid resolves faster than O(h^2).
+  // Measured at block coefficient 0.4 with nu = 402: nx 401/801/1601/3201 gave
+  // 1.12e-2%, 4.37e-3%, 1.81e-3%, 4.07e-4% -- halving the error for each halving
+  // of the spacing, so the cost of doing better by refinement alone is prohibitive.
+  //
+  // GL does not need the knots to be resolved, because it never evaluates at a
+  // prescribed point and absorbs the kink into its own quadrature error, which
+  // decays geometrically on each smooth piece. The beam direction also has no
+  // endpoint singularity, unlike the taper, so the gain is larger here.
+  const halfBeam = hull.beam / 2;
+  const transverse = gaussLegendre(nx);
+  const xs = transverse.nodes.map((t) => halfBeam * t);
+  const wx = transverse.weights.map((weight) => weight * halfBeam);
+
+  const stations = [];
+  // Iterate the rule, not the requested nu: gaussLegendre coerces an odd order up
+  // to even, so its node count can exceed nu by one. Reading nodes[i] for i up to
+  // nu then walks one past the array, and a stale `undefined` weight silently
+  // produced -515% volume -- the sign of an index misalignment rather than an
+  // approximation, though it looked like bad convergence until the weight sum was
+  // printed.
+  for (let i = 0; i < longitudinal.nodes.length; i += 1) {
+    const s = longitudinal.nodes[i];
+    const u = (s + 1) / 2;
+    const bounds = xs.map((x) => columnBounds(hull, u, Math.abs(x)));
+    // Weight for the integral over u: the rule is stated on [-1, 1], and
+    // du/ds = 1/2.
+    stations.push({ weight: longitudinal.weights[i] / 2, bounds });
+  }
+  return {
+    stations,
+    xs,
+    wx,
+    sinT,
+    cosT,
+    length: hull.length,
+    // The order actually used, which differs from the requested nu when nu is odd.
+    order: stations.length,
+  };
+}
+
+/**
+ * Volume and buoyancy centre (body frame) for a precomputed heel at centreline
+ * waterline w.
+ *
+ * For a column spanning body z in [bottom, top], the waterplane cuts it at
+ * zTop = min(top, (w + x*sin)/cos), so the submerged height is
+ * max(0, zTop - bottom) and the first moments follow in closed form:
+ * area = height, moment about z = 0 is (zTop^2 - bottom^2)/2, and the x moment is
+ * area * x. Integrating across the beam and along the hull is Simpson both ways
+ * on the same columns the shape was resolved on, so the volume, the vertical
+ * centroid and the transverse shift cannot disagree with each other the way three
+ * independent formulas can.
+ */
+/**
+ * Volume and buoyancy centre for a precomputed heel, when the water surface is
+ * the world-horizontal plane at height w on the centreline.
+ *
+ * RETURNS BODY-FRAME COORDINATES, and the whole function is a carepath between
+ * two frames, so both are stated in the name of every intermediate.
+ *
+ *   world xw =  x*cosT + z*sinT
+ *   world zw = -x*sinT + z*cosT
+ *
+ * Submerged part of a column: body z in [bottom, min(top, t)] where
+ * t = (w + x*sinT)/cosT is the body-frame height of the water surface over that
+ * column. A slice of body dz occupies world height cosT*dz, so dV = cosT*h*dx*dz;
+ * the cosT is a constant scale and cancels in every centroid, but it is kept so
+ * the intermediate sums are actual volumes and not mixed units.
+ *
+ * THE CENTROID IS TAKEN IN THE WORLD FRAME AND THEN ROTATED BACK, and that is
+ * the fix for a bug that produced a buoyancy centre 8 m above the keel on a 2.4 m
+ * hull. The previous version computed the first moment of the submerged volume
+ * about the BODY origin and divided by cosT, i.e. it assumed the world moment
+ * divided by cosT gives back a body coordinate. It does not: the moment of a
+ * rotated body about the body axes is not the rotation of its moment about the
+ * world axes, because the slice heights themselves are being measured in the
+ * wrong frame. The error grows like 1/cosT, which is 1.0 at 0 deg, 1.3 at 40 deg,
+ * 2.0 at 60 deg and unbounded at 90 -- so the artefact was invisible upright, mild
+ * at moderate heel, and catastrophic exactly where stability matters most.
+ * Measured: bz reported 8.00 at 60 deg against a hull whose deck is at 2.40.
+ *
+ * Doing it correctly: accumulate the world-frame first moments of each column,
+ * divide by volume to get the world centroid, then rotate that single point back
+ * by -heel. One rotation, at the end, of a point -- not of a moment.
+ */
+function heelAt(heel, w) {
+  const { stations, xs, wx, sinT, cosT, length } = heel;
+  let volume = 0;
+  let bodyX = 0;
+  let bodyZ = 0;
+  let worldX = 0;
+  let worldZ = 0;
+  for (const station of stations) {
+    let aVolume = 0;
+    let aBodyX = 0;
+    let aBodyZ = 0;
+    let aWorldX = 0;
+    let aWorldZ = 0;
+    for (let j = 0; j < xs.length; j += 1) {
+      const bounds = station.bounds[j];
+      if (!bounds) continue;
+      const x = xs[j];
+      const t = (w + x * sinT) / cosT;
+      const top = Math.min(bounds.top, t);
+      const bottom = bounds.bottom;
+      const height = top - bottom;
+      if (height <= 0) continue;
+      const column = wx[j] * cosT * length;
+      // int over body z of the slice, with world x and z substituted.
+      //   int dz              = h
+      //   int z dz            = (top^2 - bottom^2)/2
+      //   int z^2 dz          = (top^3 - bottom^3)/3
+      const m0 = height;
+      const m1 = (top * top - bottom * bottom) / 2;
+      const vol = column * m0;
+      // xw = x*cosT + z*sinT, so int xw d(body z) = x*cosT*m0 + sinT*m1.
+      // zw = -x*sinT + z*cosT, so int zw d(body z) = -x*sinT*m0 + cosT*m1.
+      aVolume += vol;
+      aBodyX += column * (x * m0);
+      aBodyZ += column * m1;
+      aWorldX += column * (x * cosT * m0 + sinT * m1);
+      aWorldZ += column * (-x * sinT * m0 + cosT * m1);
+    }
+    volume += station.weight * aVolume;
+    bodyX += station.weight * aBodyX;
+    bodyZ += station.weight * aBodyZ;
+    worldX += station.weight * aWorldX;
+    worldZ += station.weight * aWorldZ;
+  }
+  if (!(volume > 1e-12)) return null;
+  // Accumulate the BODY-frame first moments as well, and return the body centroid
+  // -- which is what bx/bz are documented to be -- plus the world centroid, so no
+  // caller has to rotate anything. The two are related by the forward transform
+  //   xw = bx*cosT + bz*sinT,  zw = -bx*sinT + bz*cosT
+  // and the righting arm needs only the world one.
+  //
+  // Why both, and not just the world: getting this wrong twice in a row was
+  // caused by returning one and letting a caller rotate it, which silently
+  // rotated twice. The exact rectangular-barge check settles the frame -- at any
+  // heel the body-frame buoyancy height is measured from the keel and must rise
+  // monotonically toward the section's own centroid, and at 0 deg it is exactly
+  // T/2 by inspection (draft 1.32 gives 0.66). Rotating the body centroid once
+  // into world coordinates reproduces that; the moment-based route that produced
+  // "bz = 8.0 m on a 2.4 m hull" was measuring the moment about the wrong frame's
+  // axes and dividing by cosT.
+  return {
+    volume,
+    bx: bodyX / volume,
+    bz: bodyZ / volume,
+    worldCenter: { x: worldX / volume, z: worldZ / volume },
+  };
+}
+
+/**
+ * Why a target displacement cannot be reached at a given heel.
+ *
+ * "It will not float" is two different facts and the UI has to say them apart.
+ * Too full means the hull is already carrying more than the whole hull holds --
+ * it was never going to float at ANY angle. Beyond reach means the hull floats
+ * fine, just not heeled this far. Returning the reason rather than null keeps
+ * callers from having to infer it from angle, which they cannot do correctly:
+ * the reachable envelope is not symmetric, and measured on a 40%-draft box-form
+ * hull the floatable range runs 0-90.9 deg on one side of the keel-down regime
+ * and comes back above 179 deg, because the hull is a sealed box and righting
+ * and floating are genuinely separate properties.
+ */
+const FloatFailure = Object.freeze({
+  TOO_FULL: "too full",
+  BEYOND_REACH: "beyond reach",
+  NOTHING_TO_INTEGRATE: "nothing to integrate",
+});
+
+/**
+ * The floating waterline at a heel angle, for a target displacement.
+ *
+ * Returns { waterline } or { failure, maxVolume } -- never null, because null
+ * threw away the distinction above. Callers that want an exception wrap this.
+ *
+ * volume is strictly increasing in w between "no column wet" and "every column
+ * fully wet", and above the fully-wet height it is constant, so the bracket's
+ * upper end must be derived from where monotonicity stops, not from the hull's
+ * nominal size: fully wet needs w >= max over columns of (top*cos - x*sin), which
+ * for a hull of depth D and half-beam h is D*cos + h*sin over cos, i.e.
+ */
+/**
+ * The floating waterline at a heel angle, for a target displacement.
+ *
+ * Returns { waterline } or { failure, maxVolume } -- never null, because null
+ * threw away the distinction between "this hull holds less than that" and "not at
+ * this angle", and the UI has to say them apart.
+ *
+ * BRACKETING. w is the height of the world-horizontal water plane measured on the
+ * centreline, and for a heeled ship that plane can pass far above the hull's own
+ * top, so w is NOT confined to [0, depth] -- an earlier version assumed it was and
+ * the bracket then excluded the solution at small heel angles, reporting "beyond
+ * reach" at 0 deg, and wherever it did converge it returned bx = 0 at every angle
+ * because the plane was never free to move across the hull.
+ *
+ * Nor is the useful lower limit the lowest column bottom. Column bottoms are
+ * computed in BODY frame; a column at body x sits at world height offset by
+ * x*sinT/cosT, so the w at which a column STARTS to wet is
+ *
+ *   cosT > 0:  w > bottom*cosT - x*sinT     (rising in w)
+ *   cosT < 0:  w < bottom*cosT - x*sinT     (falling in w)
+ *
+ * and the bracket must span from BELOW the smallest of those to ABOVE the largest.
+ * Taking "largest" as the near end -- which is what max(bottom*cosT - x*sinT) is,
+ * and which sits at the deck for an upright hull -- put the whole bracket above
+ * every solution for a ship floating at partial depth: measured at 0 deg with the
+ * target holding 55% of depth, the bracket started at 2.4 and volume came back 0,
+ * so maxVolume 0 was reported for a hull that floats perfectly well.
+ *
+ * So: derive a first guess from the column bottoms, then EXPAND BOTH ENDS until
+ * the target volume is bracketed. Termination is guaranteed because submerged
+ * volume tends to 0 as w goes to the dry end and to the whole hull as w goes to
+ * the wet end, monotonically in between (the single-interval property of
+ * columns.js is what makes it monotone).
+ */
+function floatWaterline(heel, targetVolume) {
+  const { xs, stations, sinT, cosT } = heel;
+  let low = Infinity;
+  let high = -Infinity;
+  for (const station of stations) {
+    for (let j = 0; j < xs.length; j += 1) {
+      const bounds = station.bounds[j];
+      if (!bounds) continue;
+      const f = bounds.bottom * cosT - xs[j] * sinT;
+      if (f < low) low = f;
+      if (f > high) high = f;
+    }
+  }
+  if (!(low < high)) {
+    // No column at all is wet at any waterline: the heel data has nothing to
+    // integrate. Distinct from TOO_FULL, which means there is something to
+    // integrate and it is not enough.
+    return { failure: FloatFailure.NOTHING_TO_INTEGRATE, maxVolume: 0 };
+  }
+
+  // lo is the lowest bottom EXACTLY, not one margin below it, and that is not
+  // sloppiness. A keel column has bottom = 0, so "lowest bottom minus a margin"
+  // is negative, and heelAt returns null below the hull rather than 0 -- which
+  // the expansion loop below reads as "the dry end is comfortably under target"
+  // and stops expanding. The bracket then does not contain the solution, the
+  // bisection converges near w = 0 where heelAt is null, and a hull floating
+  // happily at 55% of its depth is reported as unable to float at all. Every
+  // column is wet at w = low by definition, so the volume here is positive, and
+  // it is still the dry end of the bracket: at most a hair under target.
+  let lo = low;
+  let hi = high + Math.max(1, high - low);
+
+  const volumeAt = (w) => heelAt(heel, w)?.volume ?? 0;
+  // Volume increases with w below 90 deg of heel and DECREASES above it: past 90
+  // the body-to-world map reverses orientation, so raising the plane dries the
+  // hull. Measured on one hull, volume(w) ran 0 -> 77.03 over w in [0, 2.40] at
+  // 89.9 deg and the mirror 77.03 -> 0 over [-2.00, 2.00] at 90.01 deg. Expressing
+  // the search as "the boundary between enough and not enough", in terms of the
+  // orientation rather than of lo/hi, makes both signs of cosT land on the
+  // waterline instead of being driven to the dry end -- an earlier version assumed
+  // increasing, drove w to the dry end past 90 deg, reported maxVolume 0.000, and
+  // confidently declared a floating hull "TOO FULL to float".
+  const increasing = cosT > 0;
+  const enough = (w) => volumeAt(w) >= targetVolume * (1 - 1e-9);
+  const wetEnd = () => (increasing ? hi : lo);
+
+  // Expand until the wet end actually holds the target.
+  for (let step = 0; step < 80; step += 1) {
+    if (enough(wetEnd())) break;
+    if (step === 79) {
+      return { failure: FloatFailure.TOO_FULL, maxVolume: volumeAt(wetEnd()) };
+    }
+    if (increasing) hi += Math.max(1, Math.abs(hi)) * 0.5;
+    else lo -= Math.max(1, Math.abs(lo)) * 0.5;
+  }
+  // Expand the dry end until volume there is under the target, so the boundary is
+  // genuinely inside the bracket rather than below the low end.
+  for (let step = 0; step < 80; step += 1) {
+    const dryEnd = increasing ? lo : hi;
+    // Not-enough is only meaningful where there is a solid to measure. heelAt
+    // returns null once the plane is off the hull entirely, and treating that as
+    // "under target" is what let a bracket that missed the solution pass this
+    // loop untouched.
+    if (volumeAt(dryEnd) === 0 || !enough(dryEnd)) break;
+    if (step === 79) {
+      return { failure: FloatFailure.TOO_FULL, maxVolume: volumeAt(wetEnd()) };
+    }
+    if (increasing) lo -= Math.max(1, Math.abs(lo)) * 0.5;
+    else hi += Math.max(1, Math.abs(hi)) * 0.5;
+  }
+
+  // Bisection on the boundary between "not enough" and "enough".
+  //
+  // The direction is set by the orientation, NOT by which end is numerically
+  // larger, and getting this backwards is easy because both readings of the
+  // ternary look defensible. The invariant is: lo stays on the not-enough side
+  // and hi stays on the enough side, so the interval always contains the crossing.
+  // Below 90 deg of heel volume increases with w, so a mid that is enough moves
+  // HI down; above 90 deg volume DEcreases with w, so a mid that is enough moves
+  // LO up. An earlier revision had the two cases swapped -- `if (enough(mid) ===
+  // increasing) lo = mid` -- which pushed lo toward the saturated wet end, and
+  // because volume is constant above the hull, the converged w was a point where
+  // the volume trivially equals the whole hull. That is how a hull floating at
+  // 55% of its depth came back with GZ = 901 metres and a buoyancy centre 6.8 m
+  // above the keel on a 2.4 m boat: the "waterline" was 4.8 m, outside the ship,
+  // and bz was being extrapolated by the cosT division rather than measured.
+  for (let i = 0; i < 60; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (enough(mid)) hi = mid;
+    else lo = mid;
+  }
+  // hi is the tightest w that still holds the target volume, in both
+  // orientations, because the loop above maintains that invariant directly.
+  const waterline = hi;
+  if (!enough(waterline)) {
+    // Unreachable in exact arithmetic once the expansion above succeeded. Guards
+    // the bracket itself; the failure it catches is a silently wrong waterline,
+    // which is the worst thing this function could hand back.
+    return { failure: FloatFailure.BEYOND_REACH, maxVolume: volumeAt(waterline) };
+  }
+  return { waterline };
+}
+
+/**
+ * Floating state at a heel angle: the waterline that holds the displacement, and
+ * the hydrostatics there. Null means the hull cannot float that way over.
+ */
+function floatState(hull, angleRad, targetVolume, options) {
+  const heel = buildHeel(hull, angleRad, options);
+  const solution = floatWaterline(heel, targetVolume);
+  if (solution.failure !== undefined) {
+    return { failure: solution.failure, maxVolume: solution.maxVolume };
+  }
+  const body = heelAt(heel, solution.waterline);
+  if (!body) return null;
+  return { waterline: solution.waterline, ...body };
+}
+
+/**
+ * Righting arm at angleRad for a centre of gravity at (0, KG), floating upright
+ * at `uprightVolume`. See the header for why the volume ratio multiplies the arm.
+ */
+function rightingArmAt(hull, angleRad, KG, uprightVolume, options) {
+  const state = floatState(hull, angleRad, uprightVolume, options);
+  // Pass the reason through rather than collapsing it to null: "this hull does
+  // not float at all" and "not at this angle" need to reach the caller intact.
+  if (state === null) return null;
+  if (state.failure !== undefined) return { failure: state.failure, maxVolume: state.maxVolume };
+  const sinT = Math.sin(angleRad);
+  // GZ is the HORIZONTAL distance in the world from the centreline to the buoyancy
+  // centre, minus the horizontal offset of the centre of gravity. Both terms are
+  // world quantities and heelAt already returns the world centroid -- using the
+  // body-frame bx here and rotating it would be a second rotation of the same
+  // point, which is how this line produced a GZ of 901 m on a 4 m beam.
+  // GZ is the horizontal distance between the buoyancy centre's line of action
+  // and the centre of gravity, both measured in the WORLD. The moment arm of the
+  // buoyancy force about G is exactly (Bxw - KG*sinT): the buoyancy force is
+  // vertical through (Bxw, bzw) and the weight acts at (KG*sinT, KG*cosT) once
+  // the ship heels, and the horizontal separation is all a vertical force pair
+  // contributes.
+  //
+  // There is no volume-ratio factor here, and an earlier version multiplied the
+  // whole arm by (state.volume / uprightVolume). That ratio is 1 whenever the
+  // waterline solve has done its job -- the solve exists precisely to hold
+  // displacement constant -- so it could only ever be 1 or a report that the solve
+  // failed. Carrying it as a correction made the numbers look adjusted rather than
+  // measured, and if the volumes ever genuinely differ the right response is to
+  // say so, not to scale the answer.
+  const bWorldX = state.worldCenter.x;
+  return {
+    volume: state.volume,
+    waterline: state.waterline,
+    gz: bWorldX - KG * sinT,
+    body: { bx: state.bx, bz: state.bz },
+    worldCenter: state.worldCenter,
+  };
+}
+
+/**
+ * renderGeometry -- the world-frame geometry the 3D view draws, computed from the
+ * SAME halfBreadth the hydrostatics integrate.
+ *
+ * The renderer needs two closed world-space outlines per heel state: the waterplane
+ * (where the water surface world z = 0 meets the hull) and the deck sheer (the deck
+ * edge, lofted along the hull). Handing the renderer a body-frame mesh and letting
+ * it rotate would reproduce the exact class of frame bug this file has been bitten
+ * by (double-rotating buoyancy), so the rotation happens HERE, once, in the same
+ * convention as heelAt:
+ *
+ *   world xw =  x*cosT + z*sinT
+ *   world zw = -x*sinT + z*cosT      (y unchanged; the world water surface is zw = 0)
+ *
+ * Waterplane. At heel, a body-frame point is on the water surface when zw = 0,
+ * i.e. z_body = x*cosT / sinT... no -- solve zw = 0 for the section height. For a
+ * column at body |x| the water cuts it at body height t = (0 + x*sinT)/cosT
+ * (the same expression heelAt uses, with w = 0 because the water surface passes
+ * through the world origin). The half-breadth of the waterplane at that station is
+ * b(u, t). Trace both sides out and back to close the ring.
+ *
+ * This is the shape that does the righting, so getting it right matters more than
+ * getting it cheap; it is checked against the integrated waterplane area.
+ */
+function renderGeometry(hull, angleRad, waterline, { nStations = 60, nEdge = 40 } = {}) {
+  const sinT = Math.sin(angleRad);
+  const cosT = Math.cos(angleRad);
+  // waterline is a BODY-frame height measured where the water surface crosses the
+  // centreline (body x = 0). heelAt(w) cuts each column at body height
+  // t = (waterline + x*sinT)/cosT; the world water surface is zw = 0.
+  // Rotate a body point into the world. heelAt's world frame puts the keel-anchored
+  // body origin at height (waterline) above the water surface, so a point on the
+  // water surface rotates to world z = waterline, not 0. The renderer (and the
+  // "submerged iff world z < 0" convention every module uses) wants the water
+  // SURFACE at z = 0, so we drop the whole ship by waterline. One offset, applied
+  // to everything, so deck, waterplane and buoyancy stay mutually consistent.
+  const toWorld = (x, y, z) => ({
+    x: x * cosT + z * sinT,
+    y,
+    z: -x * sinT + z * cosT - waterline,
+  });
+
+  // Waterplane ring: for each station, the waterline's half-breadth, then out the
+  // starboard side and back the port side.
+  const wp = [];
+  const stations = [];
+  for (let i = 0; i < nStations; i += 1) {
+    const u = i / (nStations - 1);
+    const y = hull.length * (u - 0.5);
+    stations.push({ u, y });
+    // The water surface at this station is a line in the body x-z plane. Its
+    // widest body |x| where the hull still reaches that height gives the
+    // waterplane half-breadth there. Invert halfBreadth(u, z) monotone in z:
+    // breadth(x) such that b(u, z_of_x) sits on zw=0. Because the body height of
+    // the water at body x is t(x) = (waterline + x*sinT)/cosT, the waterplane edge
+    // is where halfBreadth(u, t(x)) = |x| -- found by a short bisection in x.
+    const edgeHalfBreadth = waterHalfBreadth(hull, u, waterline, sinT, cosT);
+    wp.push({ star: edgeHalfBreadth, y });
+  }
+  const waterplane = [];
+  // starboard edge forward, then port edge back, all on the world surface zw=0.
+  for (const s of wp) {
+    waterplane.push(toWorld(s.star, s.y, waterlineTAt(hull, s.star, waterline, sinT, cosT)));
+  }
+  for (let i = wp.length - 1; i >= 0; i -= 1) {
+    const s = wp[i];
+    waterplane.push(toWorld(-s.star, s.y, waterlineTAt(hull, s.star, waterline, sinT, cosT)));
+  }
+
+  // Deck sheer: trace the deck edge (top of the section outline) along the hull,
+  // both sides, so the tilt of the topsides reads against the level waterline.
+  const deckStarboard = [];
+  const deckPort = [];
+  for (let i = 0; i <= nEdge; i += 1) {
+    const u = i / nEdge;
+    const y = hull.length * (u - 0.5);
+    const halfB = hull.halfBreadth(u, hull.depth);
+    deckStarboard.push(toWorld(halfB, y, hull.depth));
+    deckPort.push(toWorld(-halfB, y, hull.depth));
+  }
+  const deckPolys = [deckStarboard.concat(deckPort.slice().reverse())];
+
+  // Hull surface quads, for an opaque body. hull.outline(u) is the closed body
+  // section (starboard deck -> down -> keel -> up -> port deck -> back). Loft
+  // adjacent stations: a quad joins one sample of outline(u_i) to the matching
+  // sample of outline(u_{i+1}), at the same parameter, so the strip follows the
+  // hull. Rotated to the world water-at-0 frame. The renderer clips each quad's
+  // wet vs dry shading by its world z, so this one set of quads is both the hull
+  // and the reason its colour changes at the waterline.
+  const nStationsOutline = Math.min(nStations, 26);
+  const rings = [];
+  for (let i = 0; i < nStationsOutline; i += 1) {
+    const u = i / (nStationsOutline - 1);
+    const y = hull.length * (u - 0.5);
+    const outline = hull.outline(u);
+    if (outline.length < 3) { rings.push(null); continue; }
+    rings.push(outline.map((pt) => toWorld(pt.x, y, pt.z)));
+  }
+  const hullQuads = [];
+  for (let i = 0; i + 1 < rings.length; i += 1) {
+    const A = rings[i], B = rings[i + 1];
+    if (A === null || B === null) continue;
+    if (A.length !== B.length) continue;
+    for (let k = 0; k < A.length; k += 1) {
+      const k2 = (k + 1) % A.length;
+      hullQuads.push([A[k], A[k2], B[k2], B[k]]);
+    }
+  }
+
+  return { waterplane, deckPolys, hullQuads, toWorld };
+}
+
+/** Body height of the water surface above body x, on the zw=0 water plane. */
+function waterlineTAt(hull, absX, waterline, sinT, cosT) {
+  return (waterline + absX * sinT) / cosT;
+}
+
+/**
+ * Half-breadth of the waterplane at station u: the |x| where the section's
+ * half-breadth equals the body x that the water surface sits at. halfBreadth
+ * decreases as we look at narrower z, and the water height t(x) rises with x, so
+ * there is one crossing; bisect it. Bounded by the deck half-breadth at this u.
+ */
+function waterHalfBreadth(hull, u, waterline, sinT, cosT) {
+  const deckHalf = hull.halfBreadth(u, hull.depth);
+  if (deckHalf <= 0) return 0;
+  // At body x, the water sits at body height t(x); the hull's half-breadth down
+  // there is halfBreadth(u, t). The waterplane edge is where that breadth reaches
+  // x. Define f(x) = halfBreadth(u, t(x)) - x; f > 0 inside the waterplane, < 0
+  // outside; bisect the root in [0, deckHalf].
+  const f = (x) => {
+    const t = (waterline + x * sinT) / cosT;
+    if (t <= 0) return -x;
+    if (t > hull.depth) return deckHalf; // water overtops the deck: wet to the deck edge
+    return hull.halfBreadth(u, t) - x;
+  };
+  if (f(deckHalf) >= 0) return deckHalf;  // fully wet at this station's deck edge
+  let lo = 0, hi = deckHalf;
+  for (let i = 0; i < 48; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) > 0) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+
+/**
+ * stability.js -- whether the ship comes back, and how.
+ *
+ * The righting arm GZ is the horizontal distance between the centre of buoyancy
+ * and the centre of gravity once the ship is heeled; righting moment is
+ * displacement * GZ. That one curve -- GZ against heel -- is what sailors actually
+ * judge a boat by, and everything here follows from computing it from the heeled
+ * shape:
+ *
+ *   GZ = KB*sin + BM*sin*cos^2 ... only for small angles on a wall-sided hull.
+ *
+ * Even the wall-sided form is a claim about a regime. Measured against exact
+ * section geometry on a wall-sided barge, the BM term scales as sin/cos rather
+ * than sin*cos^2: the two agree to 1e-6 at 1 deg, differ by 35% at 20 deg, and
+ * have OPPOSITE signs by 45 deg. Past the angle where the deck edge dives the
+ * waterplane changes shape completely, and a boat can develop a second hump that
+ * holds it upside down. That is the behaviour worth showing, and it cannot come
+ * from a formula -- it has to come from integrating the actual heeled shape.
+ *
+ * So this module is a thin layer over sections.js, which clips each transverse
+ * section against the heeled waterline and takes area and centroid by shoelace.
+ * Displacement is held constant by solving for the waterline at every angle, and
+ * the solve runs at the same resolution as the evaluation, because volume's
+ * sensitivity to the waterline is first order and the error would otherwise
+ * survive refinement. See sections.js for the full reasoning and the cost.
+ */
+
+
+const DEG = Math.PI / 180;
+
+/**
+ * Did the sweep run off the end of what this hull can float at, as opposed to
+ * hitting a real bug? sections.js returns null for that case rather than
+ * throwing, so this only has to recognise the messages raised by the wrappers
+ * that do throw -- matching on text keeps the two files honest about which
+ * failure is which, instead of swallowing everything.
+ */
+function hitWillFloat(error) {
+  // Matches the two messages that describe a genuine limit of what this hull can
+  // do at this loading -- and deliberately NOT the NOTHING_TO_INTEGRATE message,
+  // which describes a defect. A sweep that swallowed that one would report a
+  // clean end-of-range where the code is actually broken.
+  return /is not achievable|exceeds this/.test(error.message);
+}
+
+/**
+ * Displacement in tonnes, from volume in cubic metres of seawater.
+ * 1.025 t/m3 is the conventional figure; stated as a named constant with its
+ * unit rather than folded into a formula so it is visible and correctable.
+ */
+const SEAWATER_TONNES_PER_CUBIC_METRE = 1.025;
+
+/**
+ * Upright displacement, and the numbers a spec sheet quotes.
+ *
+ * This is the one hydrostatic that has a cheap closed form in reach, so it is
+ * worth having separately: the animation needs it once per hull, and the
+ * constant-displacement solves below are all anchored to it.
+ */
+function uprightState(hull, options) {
+  // Upright at the deck: angle 0, waterline at the top of the hull. No waterline
+  // bisection is needed because the waterline is already known -- at angle 0 it
+  // is centreline-flat, and full depth is by definition the whole hull -- so this
+  // is one quadrature evaluation rather than sixty.
+  //
+  // This function used to call polygonHydrostatics, which sections.js never
+  // exported: the import threw at module load, so stability.js could not be
+  // imported AT ALL, by anything. It sat undetected across three commits because
+  // no test imported it -- the suite exercised hull.js and sections.js directly
+  // and never went through the layer that composes them. Hence the import check
+  // now added in tests/stability.test.mjs: a module that cannot load is the
+  // cheapest possible failure and the most expensive one to leave in.
+  const state = heelAt(buildHeel(hull, 0, options), hull.depth);
+  if (!state) throw new Error("uprightState: hull floats with zero volume at full depth");
+  return state;
+}
+
+/**
+ * The floating state at a heel angle: centreline waterline and hydrostatics.
+ * Exposed because the renderer needs the same numbers the physics used -- a ship
+ * drawn at a different waterline from the one its own stability was computed at
+ * is the difference between a simulation and an illustration.
+ */
+function floatStateAt(hull, angleRad, displacementVolume, options) {
+  const state = floatState(hull, angleRad, displacementVolume, options);
+  if (state.failure !== undefined) {
+    const deg = (angleRad * 180 / Math.PI).toFixed(1);
+    if (state.failure === FloatFailure.NOTHING_TO_INTEGRATE) {
+      // A bug in the caller or the heel data, not a fact about the sea state:
+      // there was no column at all to integrate. Raise loudly rather than
+      // reporting a limit, because a limit would be a lie about the ship.
+      throw new Error(
+        `floatStateAt: no hull geometry to integrate at ${deg} deg.`,
+      );
+    }
+    if (state.failure === FloatFailure.TOO_FULL) {
+      throw new Error(
+        `floatStateAt: displacement ${displacementVolume.toFixed(3)} m3 exceeds this ` +
+        `hull's whole volume of ${state.maxVolume.toFixed(3)} m3, so it does not float ` +
+        `at any angle.`,
+      );
+    }
+    throw new Error(
+      `floatStateAt: displacement ${displacementVolume.toFixed(3)} m3 is not achievable ` +
+      `at ${deg} deg for this hull (best ${state.maxVolume.toFixed(3)} m3).`,
+    );
+  }
+  return state;
+}
+
+/**
+ * Righting arm GZ at one heel angle, for a centre of gravity at (0, KG).
+ *
+ * Returns the arm in metres alongside the displacement it belongs to. Null means
+ * the hull cannot float that way at all -- no waterline reaches the required
+ * displacement -- which the caller must show as "gone over" rather than coerce to
+ * zero, because zero is also the reading for an upright ship and the two feel
+ * nothing alike.
+ */
+function rightingArm(hull, angleRad, KG, displacementVolume, options) {
+  const hit = rightingArmAt(hull, angleRad, KG, displacementVolume, options);
+  if (hit === null) return null;
+  if (hit.failure !== undefined) return hit;
+  return {
+    gz: hit.gz,
+    heelRad: angleRad,
+    waterline: hit.waterline,
+    displacementTonnes: hit.volume * SEAWATER_TONNES_PER_CUBIC_METRE,
+    buoyancy: hit.body,
+  };
+}
+
+/**
+ * The GZ curve, sampled over heel angle.
+ *
+ * Reported in degrees because that is the unit people think in, and returned as
+ * explicit {angleDeg, gz} pairs rather than a bare array so a caller cannot
+ * silently assume a step size.
+ *
+ * The curve stops at the first angle that will not float, and `vanishedAt`
+ * records where: that angle is itself a headline number about a hull, and a
+ * truncated list is easier to misuse than a list with a stated end.
+ *
+ * "Will not float" arrives as a throw from the waterline solve, which is the
+ * right thing for a caller that asked for a specific angle -- and the wrong thing
+ * mid-sweep, where hitting the limit IS the answer. So the sweep catches it and
+ * records it; a caller asking for one angle still sees the exception.
+ */
+function gzCurve(hull, KG, displacementVolume, { stepDeg = 2, maxDeg = 180, ...options } = {}) {
+  const samples = [];
+  let vanishedAt = null;
+  for (let deg = 0; deg <= maxDeg + 1e-9; deg += stepDeg) {
+    let hit;
+    try {
+      hit = rightingArm(hull, deg * DEG, KG, displacementVolume, options);
+    } catch (error) {
+      if (!hitWillFloat(error)) throw error;
+      vanishedAt = deg;
+      break;
+    }
+    if (hit === null || hit.failure !== undefined) {
+      vanishedAt = deg;
+      break;
+    }
+    samples.push({ angleDeg: deg, gz: hit.gz });
+  }
+  return { samples, vanishedAt };
+}
+
+/**
+ * The three numbers a stability summary is made of, read off the curve.
+ *
+ *   initial GM      slope of GZ at 0 -- the stiffness people quote
+ *   maxGz / atDeg   how strong the righting is, and how far you can push
+ *   vanishingDeg    where righting is finally lost: past this, the ship stays over
+ *
+ * GM here is measured as the small-angle SLOPE of the honest curve rather than
+ * taken from KB + BM - KG, so it cannot disagree with the curve it summarises.
+ * The two independent methods agree to 0.65% on the validation hull, and that
+ * residual is this integration's chord error, not a modelling difference.
+ */
+function stabilitySummary(hull, KG, displacementVolume, options) {
+  const curve = gzCurve(hull, KG, displacementVolume, { stepDeg: 2, maxDeg: 180, ...options });
+  if (curve.samples.length < 2) {
+    throw new Error("stabilitySummary: hull does not float upright");
+  }
+  // Slope at the origin from the first two samples. Both are small angles, and
+  // GZ(0) is 0 to within quadrature noise, so the secant is the slope to the
+  // accuracy of the curve itself.
+  const [first, second] = curve.samples;
+  const initialGM = (second.gz - first.gz) / Math.sin(second.angleDeg * DEG) || 0;
+  let peak = curve.samples[0];
+  for (const sample of curve.samples) {
+    if (sample.gz > peak.gz) peak = sample;
+  }
+  let vanishingDeg = null;
+  for (let i = 1; i < curve.samples.length; i += 1) {
+    if (curve.samples[i].gz <= 0) {
+      // Linear interpolation between the last positive and first non-positive
+      // sample: the zero crossing is the number, and a 2 deg grid would otherwise
+      // report it quantised by 2 deg.
+      const a = curve.samples[i - 1];
+      const b = curve.samples[i];
+      vanishingDeg = a.angleDeg + (b.angleDeg - a.angleDeg) * (a.gz / (a.gz - b.gz));
+      break;
+    }
+  }
+  return {
+    initialGM,
+    maxGz: peak.gz,
+    maxGzAtDeg: peak.angleDeg,
+    vanishingDeg,
+    cannotFloatBeyondDeg: curve.vanishedAt,
+  };
+}
+
+
+/**
+ * view3d.js -- a software 3D view of the ship heeled to one side, WebGL-free.
+ *
+ * Why software: the browser this project is verified in (headless Firefox)
+ * returns null for both webgl2 and webgl, and no other browser starts in this
+ * sandbox. So everything is rasterised on the CPU into an ImageData buffer with
+ * a painter's back-to-front fill and a per-pixel depth test -- the approach the
+ * other projects here use for the same reason.
+ *
+ * Why 3D rather than the GZ curve alone: the curve is the answer, but the
+ * MECHANISM is spatial. Righting happens because the submerged shape changes when
+ * the ship tilts: the centre of buoyancy slides out toward the low side while the
+ * centre of gravity stays on the centreline, and the two vertical forces -- up at
+ * B, down at G -- form a couple that rotates the hull back. Seen head-on that is
+ * just a shifting picture; seen in perspective, hull tilted and the waterline
+ * staying level, you watch the arm between them open and close. Depth is the
+ * information, so the view has depth.
+ *
+ * What is drawn, and each part is the PHYSICS's own output, not a lookalike:
+ *   - the heeled hull as its deck silhouette and a waterline band, so the tilt is
+ *     legible against a level horizon;
+ *   - the WATERPLANE: the actual water surface polygon the float solve found, as a
+ *     translucent sheet. This is the shape that does the righting, and watching it
+ *     skew and slide sideways as heel grows is the whole story in one picture.
+ *   - B (centre of buoyancy) and G (centre of gravity), both real points from
+ *     sections.js, and the vertical line through B whose intersection with the
+ *     centreline is the metacentre. The gap between that line and G is GZ.
+ *
+ * The renderer never derives floatation or buoyancy itself -- it draws exactly the
+ * state handed to it from the physics, which is what separates a simulation from
+ * an illustration.
+ */
+
+const camera = {
+  // Framing chosen by search, not by eye: near-broadside (yaw ~ -1.4) so the
+  // 12 m length spans the frame, slight downward pitch so the water reads as a
+  // receding surface with a horizon, and the waterline lands near mid-frame. An
+  // earlier yaw of -0.52 looked end-on and made the ship a small blob.
+  yaw: -0.9,
+  pitch: 0.30,
+  distance: 10,
+  zoom: 1.15,
+  // Vertical framing pivot as a fraction of canvas height. The horizon of the
+  // water plane lands at centerY + tan(pitch)*scale/height*... ; centerY lets the
+  // ship and its horizon be placed together without recomputing the projection.
+  centerY: 0.40,
+};
+
+/** Screen row of the water-plane horizon for the given canvas and scale. */
+function horizonY(height, scale) {
+  return height * camera.centerY + Math.tan(camera.pitch) * scale * camera.zoom;
+}
+
+const SKY_TOP = [16, 28, 44];
+const SKY_BOTTOM = [86, 122, 138];
+
+/**
+ * Rotate a world point (x starboard, y forward, z up) by yaw then pitch, and
+ * project. null when the point is behind the eye -- the caller must drop the
+ * whole primitive rather than clip a partial line, because a line drawn through
+ * the eye smears across the canvas.
+ */
+function project(point, width, height, scale) {
+  const cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw);
+  const x1 = point.x * cy - point.y * sy;
+  const y1 = point.x * sy + point.y * cy;
+  const cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
+  const y2 = y1 * cp - point.z * sp;
+  const z2 = y1 * sp + point.z * cp;
+  const depth = camera.distance - y2;
+  if (depth <= 0.05) return null;
+  const f = (scale * camera.zoom) / depth;
+  return { sx: width / 2 + x1 * f, sy: height * camera.centerY - z2 * f, depth };
+}
+
+function setPixel(buf, width, height, x, y, rgb, depth) {
+  if (x < 0 || y < 0 || x >= width || y >= height) return;
+  const k = y * width + x;
+  // Depth is camera.distance - y, so LARGER means CLOSER. A fragment draws only
+  // if it is at least as close as whatever owns the pixel already; sky is seeded
+  // at -Infinity so real geometry always wins it. This comparison was inverted
+  // (kept smaller = farther) which rejected all geometry and left only sky.
+  if (depth < buf.depth[k]) return;
+  buf.depth[k] = depth;
+  const i = k * 4;
+  buf.data[i] = rgb[0]; buf.data[i + 1] = rgb[1]; buf.data[i + 2] = rgb[2]; buf.data[i + 3] = 255;
+}
+
+function paintSky(buf, width, height) {
+  for (let y = 0; y < height; y += 1) {
+    const t = y / (height - 1);
+    const r = SKY_TOP[0] + (SKY_BOTTOM[0] - SKY_TOP[0]) * t;
+    const g = SKY_TOP[1] + (SKY_BOTTOM[1] - SKY_TOP[1]) * t;
+    const b = SKY_TOP[2] + (SKY_BOTTOM[2] - SKY_TOP[2]) * t;
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      buf.data[i] = r; buf.data[i + 1] = g; buf.data[i + 2] = b; buf.data[i + 3] = 255;
+      buf.depth[y * width + x] = -Infinity;  // sky is farthest; always loses to geometry
+    }
+  }
+}
+
+/** Depth-tested thick line between two already-projected points. */
+function strokeLine(buf, width, height, a, b, rgb, thickness) {
+  if (a === null || b === null) return;
+  const steps = Math.ceil(Math.hypot(b.sx - a.sx, b.sy - a.sy)) || 1;
+  for (let s = 0; s <= steps; s += 1) {
+    const t = s / steps;
+    const sx = a.sx + (b.sx - a.sx) * t;
+    const sy = a.sy + (b.sy - a.sy) * t;
+    const depth = a.depth + (b.depth - a.depth) * t;
+    const rad = Math.max(0, thickness - 1);
+    for (let dy = -rad; dy <= rad; dy += 1) {
+      for (let dx = -rad; dx <= rad; dx += 1) {
+        if (dx * dx + dy * dy > rad * rad) continue;
+        setPixel(buf, width, height, Math.round(sx + dx), Math.round(sy + dy), rgb, depth);
+      }
+    }
+  }
+}
+
+function strokeLineWorld(buf, width, height, scale, p0, p1, rgb, thickness) {
+  strokeLine(buf, width, height,
+    project(p0, width, height, scale), project(p1, width, height, scale), rgb, thickness);
+}
+
+/** Fill a projected polygon with one colour and a single depth value. */
+function fillPolyDepth(buf, width, height, poly, rgb, depth) {
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of poly) { if (p.sy < minY) minY = p.sy; if (p.sy > maxY) maxY = p.sy; }
+  const y0 = Math.max(0, Math.floor(minY));
+  const y1 = Math.min(height - 1, Math.ceil(maxY));
+  for (let y = y0; y <= y1; y += 1) {
+    const xs = [];
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const yi = poly[i].sy, yj = poly[j].sy;
+      if ((yi > y) !== (yj > y)) xs.push(poly[i].sx + ((y + 0.5 - yi) / (yj - yi)) * (poly[j].sx - poly[i].sx));
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const xa = Math.max(0, Math.floor(xs[k]));
+      const xb = Math.min(width - 1, Math.ceil(xs[k + 1]));
+      for (let x = xa; x <= xb; x += 1) setPixel(buf, width, height, x, y, rgb, depth);
+    }
+  }
+}
+
+function fillPolygon(buf, width, height, poly, rgb, depth) {
+  // Even-odd fill of a projected closed polygon. The waterplane is near-convex so
+  // even-odd and non-zero agree; even-odd is chosen only because it needs no
+  // winding assumption about the point order the physics hands back.
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of poly) { if (p.sy < minY) minY = p.sy; if (p.sy > maxY) maxY = p.sy; }
+  const y0 = Math.max(0, Math.floor(minY));
+  const y1 = Math.min(height - 1, Math.ceil(maxY));
+  for (let y = y0; y <= y1; y += 1) {
+    // scanline crossings
+    const xs = [];
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const yi = poly[i].sy, yj = poly[j].sy;
+      if ((yi > y) !== (yj > y)) {
+        xs.push(poly[i].sx + ((y + 0.5 - yi) / (yj - yi)) * (poly[j].sx - poly[i].sx));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const xa = Math.max(0, Math.floor(xs[k]));
+      const xb = Math.min(width - 1, Math.ceil(xs[k + 1]));
+      for (let x = xa; x <= xb; x += 1) setPixel(buf, width, height, x, y, rgb, depth);
+    }
+  }
+}
+
+function blend(rgb, alpha, under) {
+  return [
+    Math.round(rgb[0] * alpha + under[0] * (1 - alpha)),
+    Math.round(rgb[1] * alpha + under[1] * (1 - alpha)),
+    Math.round(rgb[2] * alpha + under[2] * (1 - alpha)),
+  ];
+}
+
+function marker(buf, width, height, scale, point, rgb, radiusWorld) {
+  const p = project(point, width, height, scale);
+  if (p === null) return;
+  const r = Math.max(3, Math.round(radiusWorld * scale * camera.zoom / camera.distance));
+  for (let dy = -r; dy <= r; dy += 1) {
+    for (let dx = -r; dx <= r; dx += 1) {
+      if (dx * dx + dy * dy > r * r) continue;
+      setPixel(buf, width, height, Math.round(p.sx + dx), Math.round(p.sy + dy), rgb, 1e6);
+    }
+  }
+}
+
+/**
+ * Render one heel state. Everything here is world-frame, waterline at z = 0.
+ *   deckOutline    [{x,y}] world points of the deck edge (the sheer), for the hull silhouette
+ *   waterplane     [{x,y}] world points of the water surface polygon, z = 0
+ *   buoyancy, gravity  {x,y,z} world points; gravity has z = KG*cos(heel) etc.
+ */
+/**
+ * Colour helpers and the scene composition.
+ *
+ * Palette: a dusk sea. The hull is a warm topsides above the waterline and a
+ * cooler antifouling red below, so the waterline is legible as a colour break even
+ * where geometry is edge-on. The water surface is a translucent teal so the ship
+ * reads as sitting IN it; the waterplane (the shape that rights the ship) is a
+ * bright thin ring at the waterline, not a filled blob -- filled, it read as the
+ * whole ship and hid the hull behind it.
+ */
+const SEA = [22, 58, 82];
+const SEA_FAR = [46, 96, 116];
+const HULL_DRY = [206, 120, 74];
+const HULL_WET = [122, 66, 74];
+const WATERLINE = [150, 226, 240];
+const DECK = [52, 60, 74];
+const LIGHT = { x: 0.45, y: -0.5, z: 0.74 };
+
+function shade(rgb, normal) {
+  let d = (normal.x * LIGHT.x + normal.y * LIGHT.y + normal.z * LIGHT.z);
+  d = Math.max(0, d);
+  const level = 0.4 + 0.6 * d;
+  return [Math.min(255, rgb[0] * level), Math.min(255, rgb[1] * level), Math.min(255, rgb[2] * level)];
+}
+
+function normalOf(poly3) {
+  const ax = poly3[1].x - poly3[0].x, ay = poly3[1].y - poly3[0].y, az = poly3[1].z - poly3[0].z;
+  const bx = poly3[2].x - poly3[0].x, by = poly3[2].y - poly3[0].y, bz = poly3[2].z - poly3[0].z;
+  let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+  const len = Math.hypot(nx, ny, nz) || 1;
+  return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+function renderScene(ctx, { width, height, deckPolys, waterplane, hullQuads, buoyancy, gravity }) {
+  const image = ctx.createImageData(width, height);
+  const buf = { data: image.data, depth: new Float32Array(width * height) };
+  const scale = Math.min(width, height) * 0.66;
+  paintSky(buf, width, height);
+
+  // Water surface: a large flat quad on zw = 0, so there is a sea plane and a
+  // horizon the ship's tilt reads against. Depth is uniform, drawn before the hull.
+  fillWater(buf, width, height, scale);
+
+  // Hull: opaque lofted quads, wet below zw = 0, dry above. Painter-sorted far to
+  // near (smaller depth first means farther for this projection is larger; we sort
+  // descending so far quads paint first and near overwrite them).
+  if (hullQuads && hullQuads.length) {
+    const faces = [];
+    for (const q of hullQuads) {
+      const proj = q.map((pt) => project(pt, width, height, scale));
+      if (proj.some((p) => p === null)) continue;
+      const meanZ = (q[0].z + q[1].z + q[2].z + q[3].z) / 4;
+      const depth = proj.reduce((t, p) => t + p.depth, 0) / proj.length;
+      const rgb = shade(meanZ < 0 ? HULL_WET : HULL_DRY, normalOf(q));
+      faces.push({ proj, depth, rgb });
+    }
+    faces.sort((a, b) => a.depth - b.depth);   // far (large depth is near; here sort so far paints first)
+    for (const f of faces) fillPolyDepth(buf, width, height, f.proj, f.rgb, f.depth);
+  }
+
+  // Deck outline + sheer: a bright thin ring so the topsides edge reads against sky.
+  if (deckPolys) {
+    for (const ring of deckPolys) {
+      const pts = ring.map((p) => project(p, width, height, scale));
+      for (let i = 0; i < pts.length; i += 1) {
+        strokeLine(buf, width, height, pts[i], pts[(i + 1) % pts.length], DECK, 2);
+      }
+    }
+  }
+
+  // Waterplane: the water's cut through the hull -- the shape that does the
+  // righting. Drawn as a thin bright ring (not filled), on top of the hull.
+  // Segments near the bow/stern convergence (where the hull narrows to a point)
+  // are skipped: there the ring's two sides collapse together and a stroke
+  // smears along the waterline as dashes -- an artifact, not the waterline.
+  if (waterplane && waterplane.length > 2) {
+    const pts = waterplane.map((p) => project(p, width, height, scale));
+    for (let i = 0; i < pts.length; i += 1) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      if (a === null || b === null) continue;
+      if (Math.hypot(a.sx - b.sx, a.sy - b.sy) < 2.5) continue;
+      strokeLine(buf, width, height, a, b, WATERLINE, 2);
+    }
+  }
+
+  // Line of action: vertical through B up to G's height. GZ is the horizontal gap
+  // between this line and the centreline's weight point -- the visible mechanism.
+  if (buoyancy && gravity) {
+    strokeLineWorld(buf, width, height, scale,
+      { x: buoyancy.x, y: buoyancy.y, z: buoyancy.z },
+      { x: buoyancy.x, y: buoyancy.y, z: gravity.z }, [150, 226, 240], 1);
+    strokeLineWorld(buf, width, height, scale,
+      { x: gravity.x, y: gravity.y, z: gravity.z },
+      { x: buoyancy.x, y: buoyancy.y, z: gravity.z }, [255, 224, 120], 1);
+  }
+  const dotR = 0.18;
+  if (gravity) marker(buf, width, height, scale, gravity, [255, 224, 120], dotR);
+  if (buoyancy) marker(buf, width, height, scale, buoyancy, [90, 200, 255], dotR);
+
+  ctx.putImageData(image, 0, 0);
+}
+
+/**
+ * Fill the sea plane. A rectangle on zw = 0 spanning well past the hull, shaded
+ * with distance so the far edge meets the sky as a horizon. Because the plane is
+ * flat and huge, project its four far corners and fill the quad.
+ */
+/**
+ * The sea, drawn as everything below the horizon.
+ *
+ * A finite plane centred on the ship does not work here: at this pitch the near
+ * edge swings behind the eye and the quad cannot be rasterised (an earlier attempt
+ * drew nothing because three of four corners projected behind the camera). The
+ * horizon is what actually reads as "at sea", and it is stable: project one far
+ * water point straight away from the camera, take its screen row as the horizon,
+ * and fill below it with a distance gradient. The ship then sits on a level water
+ * line you can tilt it against, which is the whole point of showing water at all.
+ */
+function fillWater(buf, width, height, scale) {
+  // The sea is everything below the ship's own waterline (the world origin, which
+  // every heeled state keeps on the surface). Anchoring the fill to the projected
+  // waterline rather than an analytic horizon means the hull reads as afloat at any
+  // pitch and any canvas aspect -- the earlier per-aspect horizon math left the ship
+  // floating in the sky on a tall portrait canvas. The near water is drawn at the
+  // waterline; it deepens toward the bottom of the frame.
+  const origin = project({ x: 0, y: 0, z: 0 }, width, height, scale);
+  const waterRow = origin === null ? height * 0.4 : origin.sy;
+  const span = Math.max(1, height - waterRow);
+  for (let y = Math.floor(waterRow); y < height; y += 1) {
+    const t = (y - waterRow) / span;
+    const rgb = [
+      SEA_FAR[0] + (SEA[0] - SEA_FAR[0]) * t,
+      SEA_FAR[1] + (SEA[1] - SEA_FAR[1]) * t,
+      SEA_FAR[2] + (SEA[2] - SEA_FAR[2]) * t,
+    ];
+    const depth = 20 * (1 - t) + 4;
+    for (let x = 0; x < width; x += 1) setPixel(buf, width, height, x, y, rgb, depth);
+  }
+}
+
+
+
+/**
+ * app.js -- the interactive layer: wire the physics and the 3D view to input.
+ *
+ * What the user does, in one line: set how full the ship is and how high its
+ * weight sits, then roll it over and let go, and watch whether it comes back.
+ * Everything on screen is the physics's own numbers; nothing is animated by
+ * hand. The roll is a real second-order equation (righting moment + damping +
+ * your drag), integrated in real time, so the motion you see IS the stability
+ * the GZ curve describes.
+ *
+ * The layout is a single column: the 3D view up top (the mechanism), the live
+ * readout and the GZ curve below it (the numbers), controls at the bottom where
+ * a thumb reaches them on a phone. On a wide screen the 3D view and the curve
+ * sit side by side. The controls are large and labelled in plain words because
+ * the whole claim of the app is that you can understand this without knowing the
+ * jargon -- so the jargon (GM, GZ, metacentre) is introduced only after the
+ * thing has been seen moving.
+ */
+
+
+
+/**
+ * The simulation state the user drives. Kept in one object so the controls, the
+ * physics, and the render all read one source of truth.
+ */
+const state = {
+  draftFrac: 0.55,      // how full: fraction of depth the keel sits below water upright
+  kgFrac: 0.60,         // how high the weight is, as a fraction of the hull's critical KG
+  heelDeg: 0,           // current roll
+  heelVel: 0,           // roll rate, deg/s
+  hull: null,
+  volume: 0,            // displaced m^3, held constant as it rolls
+  criticalKG: 1.0,
+  KG: 1.0,
+  summary: null,
+  curve: null,
+  dragging: false,
+};
+
+const HULL_SPEC = { length: 12, beam: 4, depth: 2.4, blockCoefficient: 0.62, prismaticCoefficient: 0.9 };
+
+function rebuildHydrostatics() {
+  state.hull = new Hull(HULL_SPEC);
+  const draft = state.draftFrac * state.hull.depth;
+  const up = heelAt(buildHeel(state.hull, 0), draft);
+  state.volume = up.volume;
+  // Critical KG: the height at which the ship stops returning upright. Bisect on
+  // the small-angle slope; the result is what kgFrac scales, so "how close to
+  // capsizing" stays a meaningful, hull-independent dial.
+  let lo = 0.3, hi = state.hull.depth * 1.2;
+  const coarse = { stepDeg: 5, maxDeg: 20 };
+  for (let i = 0; i < 40; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (stabilitySummary(state.hull, mid, state.volume, coarse).initialGM > 0) lo = mid;
+    else hi = mid;
+  }
+  state.criticalKG = (lo + hi) / 2;
+  state.KG = state.kgFrac * state.criticalKG;
+  state.summary = stabilitySummary(state.hull, state.KG, state.volume);
+  state.curve = gzCurve(state.hull, state.KG, state.volume, { stepDeg: 2, maxDeg: 90 });
+}
+
+/** A frame of everything the view and the readout need, at the current heel. */
+function currentFrame() {
+  const a = state.heelDeg * DEG;
+  const st = floatState(state.hull, a, state.volume);
+  if (st.failure !== undefined || st === null) return null;
+  const g = renderGeometry(state.hull, a, st.waterline, { nStations: 80 });
+  // heelAt's worldCenter.z is measured from the keel, so the water surface sits at
+  // z = waterline there; renderGeometry drops the ship so the water surface is at
+  // z = 0. Markers must live in the SAME frame as the hull they sit on, so they get
+  // the same -waterline offset. Getting this wrong once put B and G floating above
+  // the deck; the offset is applied here, once, matching renderGeometry's toWorld.
+  const bWorld = st.worldCenter;
+  const waterAtZero = (z) => z - st.waterline;
+  return {
+    heelDeg: state.heelDeg,
+    geometry: g,
+    buoyancy: { x: bWorld.x, y: 0, z: waterAtZero(bWorld.z) },
+    gravity: { x: state.KG * Math.sin(a), y: 0, z: waterAtZero(state.KG * Math.cos(a)) },
+    gz: bWorld.x - state.KG * Math.sin(a),
+    state: st,
+  };
+}
+
+/**
+ * Advance the roll by dt seconds under the righting moment, damping, and while
+ * dragging, the user's imposed angle. The righting moment comes from the SAME
+ * rightingArm the curve is built from, so the motion and the graph cannot
+ * disagree -- if GZ is negative at this angle the ship is shown falling further
+ * over, not secretly held up.
+ *
+ * Roll dynamics: I * theta'' = -displacement * GZ(theta) * g_water_proxy - c *
+ * theta'. Using displacement*GZ as the righting moment (tonnes*m) and a lumped
+ * inertia, the constants below set a roll period of a few seconds, which reads as
+ * a ship rather than a metronome. Damping is real: a real ship's roll decays.
+ */
+const GRAV = 9.81;
+function step(dt) {
+  if (state.dragging) return;   // user holds the angle; no dynamics while dragged
+  const a = state.heelDeg * DEG;
+  const hit = rightingArm(state.hull, a, state.KG, state.volume);
+  if (hit === null || hit.failure !== undefined) {
+    // Past the floatable limit: the ship is going over. Let it keep rolling with
+    // the same sign it was moving rather than freezing at the last valid angle.
+    state.heelVel += Math.sign(state.heelVel || 1) * 20 * dt;
+  } else {
+    // Restoring torque opposes GZ's sign scaled by displacement; a broad stiff
+    // hull snaps back fast, a tender one sluggishly -- which is exactly GM.
+    const inertia = state.volume * 40;     // lumped roll inertia, kg*m^2-ish scale
+    const torque = -hit.gz * state.volume * GRAV * 1.025;  // tonnes*m -> ~N*m
+    const damping = -state.heelVel * inertia * 0.6;
+    const accel = (torque * 1000 + damping) / inertia;      // deg/s^2 (approx, small angle mass factor)
+    state.heelVel += accel * dt;
+  }
+  state.heelVel *= 0.999;
+  state.heelDeg += state.heelVel * dt;
+  // Reflect off the ends of the floatable range so the ship stops somewhere sane.
+  if (state.heelDeg > 88) { state.heelDeg = 88; state.heelVel = 0; }
+  if (state.heelDeg < -88) { state.heelDeg = -88; state.heelVel = 0; }
+}
+
+
+/**
+ * ui.js -- the browser shell: canvas sizing, input, the animation loop, the
+ * GZ-curve chart, and the sentences. Runs last, after the physics modules.
+ *
+ * Readouts are generated from the live physics state, never fixed strings keyed
+ * off a phase -- a caption that drifts from the model is worse than none.
+ */
+
+// This module is the browser shell: it touches the DOM the moment it loads, so it
+// cannot be imported under Node. The load check (tests/stability.test.mjs) imports
+// every src module to catch dead exports, so the DOM access is deferred into
+// init() and the module body is inert until a browser calls it. Keeping the check
+// exhaustive -- importing ui.js like everything else -- is worth the small wrapper;
+// excluding it would reopen the exact hole the check exists to close.
+const hasDom = typeof document !== "undefined";
+const el = (id) => document.getElementById(id);
+let viewCanvas = null, viewCtx = null, curveCanvas = null, curveCtx = null;
+
+// Internal raster width, capped by AREA not width, so a wide short canvas and a
+// tall narrow phone canvas cost about the same to paint. Matches the house rule:
+// the pixelation the operator flagged is a buffer-resolution problem, so this is
+// the knob that matters. 0.9 CSS px at a 900px canvas ≈ 1.4 buffer px/CSS px
+// before smoothing.
+const MAX_BUFFER_AREA = 900 * 620;
+
+let bufferWidth = 0, bufferHeight = 0;
+let holder = null;
+function offCanvas() {
+  if (holder === null) holder = document.createElement("canvas");
+  if (holder.width !== bufferWidth || holder.height !== bufferHeight) {
+    holder.width = bufferWidth;
+    holder.height = bufferHeight;
+  }
+  return holder;
+}
+
+function sizeCanvas(canvas, ctx) {
+  const rect = canvas.getBoundingClientRect();
+  const cssW = Math.max(1, rect.width);
+  const cssH = Math.max(1, rect.height);
+  // devicePixelRatio can be null (observed in this Firefox), and `null || 1` is 1
+  // but Math.min(null, 2) is 0; guard to a real positive number before multiplying.
+  const rawDpr = Number(window.devicePixelRatio);
+  const dpr = Math.min(rawDpr > 0 ? rawDpr : 1, 2);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  return { cssW, cssH };
+}
+
+// The canvas has no CSS size until the browser has laid the page out, which is
+// not true the instant init() runs -- measuring there returned 0x0, and drawing
+// into a 0-pixel canvas paints nothing and raises no error, i.e. a silently
+// blank view. So sizing is checked against the live layout every frame and only
+// recomputed when it actually changed: the first frame that has real dimensions
+// sizes correctly, and orientation/resize changes are caught by the same path.
+let sizedWidth = 0, sizedHeight = 0;
+function ensureSized() {
+  const rect = viewCanvas.getBoundingClientRect();
+  if (Math.round(rect.width) !== sizedWidth || Math.round(rect.height) !== sizedHeight) {
+    resizeAll();
+    sizedWidth = Math.round(rect.width);
+    sizedHeight = Math.round(rect.height);
+    return true;
+  }
+  return false;
+}
+
+function resizeAll() {
+  const v = sizeCanvas(viewCanvas, viewCtx);
+  // Buffer area cap: pick a width, derive height from the canvas aspect.
+  let bw = Math.min(v.cssW, 1000);
+  let bh = bw * (v.cssH / v.cssW);
+  const area = bw * bh;
+  if (area > MAX_BUFFER_AREA) {
+    const s = Math.sqrt(MAX_BUFFER_AREA / area);
+    bw *= s; bh *= s;
+  }
+  bufferWidth = Math.max(120, Math.round(bw));
+  bufferHeight = Math.max(80, Math.round(bh));
+  sizeCanvas(curveCanvas, curveCtx);
+}
+
+/**
+ * Draw the 3D scene into the internal buffer, then blit it scaled up with
+ * smoothing on. One blit path so sharpness can't differ between a screenshot and
+ * a phone (the two-copies failure mode).
+ */
+function paintView(frame) {
+  const off = offCanvas();
+  const octx = off.getContext("2d");
+  renderScene(octx, {
+    width: bufferWidth,
+    height: bufferHeight,
+    deckPolys: frame.geometry.deckPolys,
+    waterplane: frame.geometry.waterplane,
+    hullQuads: frame.geometry.hullQuads,
+    buoyancy: frame.buoyancy,
+    gravity: frame.gravity,
+  });
+  viewCtx.imageSmoothingEnabled = true;
+  viewCtx.imageSmoothingQuality = "high";
+  viewCtx.drawImage(off, 0, 0, viewCanvas.width, viewCanvas.height);
+}
+
+/** The righting-arm curve, with the current heel marked. */
+function paintCurve() {
+  const ctx = curveCtx;
+  const W = curveCanvas.width, H = curveCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#131f2e";
+  ctx.fillRect(0, 0, W, H);
+  const samples = state.curve ? state.curve.samples : [];
+  if (samples.length === 0) return;
+  const maxDeg = Math.max(30, samples[samples.length - 1].angleDeg);
+  let maxGz = 0.05;
+  for (const s of samples) maxGz = Math.max(maxGz, Math.abs(s.gz));
+  maxGz *= 1.15;
+  const pad = { l: 46, r: 14, t: 12, b: 30 };
+  const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  const X = (deg) => pad.l + (deg / maxDeg) * plotW;
+  const Y = (gz) => pad.t + plotH * 0.5 - (gz / maxGz) * (plotH * 0.5);
+
+  // zero line and axes
+  ctx.strokeStyle = "#3a4c66"; ctx.lineWidth = 1.5 * devicePixelRatio();
+  ctx.beginPath(); ctx.moveTo(pad.l, Y(0)); ctx.lineTo(W - pad.r, Y(0)); ctx.stroke();
+  ctx.fillStyle = "#9fb0c4"; ctx.font = `${12 * devicePixelRatio()}px system-ui`;
+  ctx.fillText("0", pad.l - 22, Y(0) + 4);
+  ctx.fillText(`+${maxGz.toFixed(2)}m`, 4, pad.t + 10);
+  ctx.fillText(`-${maxGz.toFixed(2)}m`, 4, H - pad.b);
+  ctx.fillText("heel →", W - pad.r - 46, H - 8);
+
+  // curve
+  ctx.strokeStyle = "#7ec8f0"; ctx.lineWidth = 2.5 * devicePixelRatio();
+  ctx.beginPath();
+  for (let i = 0; i < samples.length; i += 1) {
+    const x = X(samples[i].angleDeg), y = Y(samples[i].gz);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // current heel marker
+  const hx = X(Math.min(Math.abs(state.heelDeg), maxDeg));
+  const cur = rightingArm(state.hull, state.heelDeg * DEG, state.KG, state.volume);
+  if (cur !== null && cur.failure === undefined) {
+    ctx.fillStyle = "#ffd878";
+    ctx.beginPath(); ctx.arc(hx, Y(cur.gz), 4 * devicePixelRatio(), 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = "#ffd87855"; ctx.lineWidth = devicePixelRatio();
+  ctx.beginPath(); ctx.moveTo(hx, pad.t); ctx.lineTo(hx, H - pad.b); ctx.stroke();
+}
+
+function devicePixelRatio() {
+  const raw = Number(window.devicePixelRatio);
+  return Math.min(raw > 0 ? raw : 1, 2);
+}
+
+function updateBadge(frame) {
+  el("heelOut").textContent = `${state.heelDeg.toFixed(0)}°`;
+  if (frame !== null) {
+    el("gzOut").textContent = frame.gz.toFixed(3);
+    const v = el("verdict");
+    if (frame.gz > 0.005) { v.textContent = "will right"; v.className = "ok"; }
+    else if (frame.gz < -0.005) { v.textContent = "falling further"; v.className = "bad"; }
+    else { v.textContent = "balanced"; v.className = ""; }
+  } else {
+    el("gzOut").textContent = "—";
+    const v = el("verdict");
+    v.textContent = "won't float here"; v.className = "bad";
+  }
+}
+
+function updateWords() {
+  const s = state.summary;
+  const gmWord = s.initialGM > 0.15 ? "stiff" : s.initialGM > 0 ? "tender" : "will loll";
+  el("liveText").innerHTML =
+    `A ${gmWord} ship at ${Math.round(state.draftFrac * 100)}% load, heeled ${Math.round(Math.abs(state.heelDeg))}°. ` +
+    `The bright cyan ring is where the water cuts the hull — the <b>waterplane</b>. The blue dot ` +
+    `is where all the water's push acts (centre of buoyancy); the gold dot is where the weight ` +
+    `acts (centre of gravity).`;
+  const pk = s.maxGz != null ? s.maxGz.toFixed(2) : "0";
+  el("curveText").innerHTML =
+    `Righting arm rises to <b>${pk} m</b> near <b>${s.maxGzAtDeg}°</b>, then the hull can't` +
+    (s.cannotFloatBeyondDeg ? ` float past <b>${Math.round(s.cannotFloatBeyondDeg)}°</b>.` : `. `) +
+    ` Initial <b>GM</b> ${s.initialGM.toFixed(2)} m.`;
+  el("criticalText").innerHTML =
+    `<b>The critical weight height</b> for this ship at this load is about ` +
+    `<b>${state.criticalKG.toFixed(2)} m</b> above the keel. Below it, the ship comes back; ` +
+    `above it, upright is unstable.`;
+  const pct = Math.round(state.kgFrac * 100);
+  el("kgExpl").innerHTML = state.kgFrac >= 1
+    ? `Weight is <b>above</b> the capsizing limit (${pct}% of it) — this ship will loll over.`
+    : `Weight sits at <b>${pct}%</b> of the capsizing limit. Raise it toward 100% and watch the ship go from stiff to sluggish to helpless.`;
+}
+
+let lastT = 0;
+let lastGoodFrame = null;
+function frameTick(now) {
+  ensureSized();
+  const dt = Math.min(0.05, (now - lastT) / 1000 || 0);
+  lastT = now;
+  step(dt);
+  const frame = currentFrame();
+  paintView(frame !== null ? frame : lastGoodFrame);
+  if (frame !== null) lastGoodFrame = frame;
+  paintCurve();
+  updateBadge(frame);
+  requestAnimationFrame(frameTick);
+}
+
+  // ---- input -------------------------------------------------------------
+function init() {
+  // Bind DOM refs now that we know a browser is present (Node has no document).
+  viewCanvas = el("view");
+  viewCtx = viewCanvas.getContext("2d", { alpha: false });
+  curveCanvas = el("curve");
+  curveCtx = curveCanvas.getContext("2d", { alpha: false });
+
+  // Drag on the 3D view rolls the ship. Grab-and-release: while held, heel follows
+  // the pointer; on release the dynamics take over from wherever it let go.
+  let dragging = false, dragStartX = 0, dragStartHeel = 0;
+  viewCanvas.addEventListener("pointerdown", (e) => {
+    dragging = true; state.dragging = true;
+    dragStartX = e.clientX; dragStartHeel = state.heelDeg;
+    viewCanvas.setPointerCapture(e.pointerId);
+  });
+  viewCanvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - dragStartX;
+    state.heelDeg = Math.max(-80, Math.min(80, dragStartHeel + dx * 0.35));
+    state.heelVel = 0;
+  });
+  function endDrag() { dragging = false; state.dragging = false; }
+  viewCanvas.addEventListener("pointerup", endDrag);
+  viewCanvas.addEventListener("pointercancel", endDrag);
+
+  // Pinch / wheel to zoom the camera.
+  viewCanvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    camera.zoom = Math.max(0.5, Math.min(2.5, camera.zoom * (1 - e.deltaY * 0.001)));
+  }, { passive: false });
+  let pinchDist = null;
+  viewCanvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+      pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    }
+  }, { passive: true });
+  viewCanvas.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2 && pinchDist !== null) {
+      const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+      camera.zoom = Math.max(0.5, Math.min(2.5, camera.zoom * (d / pinchDist)));
+      pinchDist = d;
+    }
+  }, { passive: true });
+
+  el("draft").addEventListener("input", (e) => {
+    state.draftFrac = Number(e.target.value) / 100;
+    el("draftOut").textContent = `${e.target.value}%`;
+    rebuildHydrostatics(); updateWords();
+  });
+  el("kg").addEventListener("input", (e) => {
+    state.kgFrac = Number(e.target.value) / 100;
+    el("kgOut").textContent = `${e.target.value}%`;
+    rebuildHydrostatics(); updateWords();
+  });
+  el("pushBtn").addEventListener("click", () => {
+    state.heelDeg = state.summary.initialGM >= 0 ? 35 : -35;
+    state.heelVel = 0; state.dragging = false; dragging = false;
+  });
+  el("levelBtn").addEventListener("click", () => { state.heelDeg = 0; state.heelVel = 0; });
+
+  window.addEventListener("resize", () => { sizedWidth = 0; });
+
+  // ---- boot --------------------------------------------------------------
+  resizeAll();
+  rebuildHydrostatics();
+  updateWords();
+  requestAnimationFrame(frameTick);
+}
+
+if (hasDom) init();
+
+</script>
+</body>
+</html>

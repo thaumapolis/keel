@@ -18,14 +18,16 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 #masthead p{margin:0;color:var(--dim);font-size:.9rem;flex:1 1 240px}
 #stage{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 canvas#view{display:block;width:100%;height:auto;aspect-ratio:16/10;touch-action:none;cursor:grab}
+@media (orientation:portrait){canvas#view{aspect-ratio:4/3}}
 canvas#view:active{cursor:grabbing}
-#badge{position:absolute;top:10px;left:12px;font-size:.82rem;color:var(--ink);
-  background:#0b1420cc;border:1px solid var(--line);border-radius:8px;padding:6px 10px;max-width:70%}
+#badge{position:absolute;top:10px;left:12px;right:12px;font-size:.82rem;color:var(--ink);
+  background:#0b1420cc;border:1px solid var(--line);border-radius:8px;padding:6px 10px;max-width:calc(100% - 24px)}
 #badge b{color:var(--cyan);font-variant-numeric:tabular-nums}
 #verdict{font-weight:600}
 #verdict.ok{color:var(--ok)} #verdict.bad{color:var(--bad)}
 #hint{position:absolute;top:10px;right:12px;font-size:.78rem;color:var(--dim);
   background:#0b1420cc;border:1px solid var(--line);border-radius:8px;padding:5px 9px}
+@media (max-width:640px){#hint{display:none} #badge{top:auto;bottom:10px}}
 #grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
 .card h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:0 0 8px}

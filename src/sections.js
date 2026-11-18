@@ -601,7 +601,34 @@ export function renderGeometry(hull, angleRad, waterline, { nStations = 60, nEdg
   }
   const deckPolys = [deckStarboard.concat(deckPort.slice().reverse())];
 
-  return { waterplane, deckPolys, toWorld };
+  // Hull surface quads, for an opaque body. hull.outline(u) is the closed body
+  // section (starboard deck -> down -> keel -> up -> port deck -> back). Loft
+  // adjacent stations: a quad joins one sample of outline(u_i) to the matching
+  // sample of outline(u_{i+1}), at the same parameter, so the strip follows the
+  // hull. Rotated to the world water-at-0 frame. The renderer clips each quad's
+  // wet vs dry shading by its world z, so this one set of quads is both the hull
+  // and the reason its colour changes at the waterline.
+  const nStationsOutline = Math.min(nStations, 26);
+  const rings = [];
+  for (let i = 0; i < nStationsOutline; i += 1) {
+    const u = i / (nStationsOutline - 1);
+    const y = hull.length * (u - 0.5);
+    const outline = hull.outline(u);
+    if (outline.length < 3) { rings.push(null); continue; }
+    rings.push(outline.map((pt) => toWorld(pt.x, y, pt.z)));
+  }
+  const hullQuads = [];
+  for (let i = 0; i + 1 < rings.length; i += 1) {
+    const A = rings[i], B = rings[i + 1];
+    if (A === null || B === null) continue;
+    if (A.length !== B.length) continue;
+    for (let k = 0; k < A.length; k += 1) {
+      const k2 = (k + 1) % A.length;
+      hullQuads.push([A[k], A[k2], B[k2], B[k]]);
+    }
+  }
+
+  return { waterplane, deckPolys, hullQuads, toWorld };
 }
 
 /** Body height of the water surface above body x, on the zw=0 water plane. */
