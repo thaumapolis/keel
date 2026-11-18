@@ -12,18 +12,23 @@
 // init() and the module body is inert until a browser calls it. Keeping the check
 // exhaustive -- importing ui.js like everything else -- is worth the small wrapper;
 // excluding it would reopen the exact hole the check exists to close.
+import { camera } from "./view3d.js";
+
 const hasDom = typeof document !== "undefined";
 const el = (id) => document.getElementById(id);
 let viewCanvas = null, viewCtx = null, curveCanvas = null, curveCtx = null;
 
-// Internal raster width, capped by AREA not width, so a wide short canvas and a
-// tall narrow phone canvas cost about the same to paint. Matches the house rule:
-// the pixelation the operator flagged is a buffer-resolution problem, so this is
-// the knob that matters. 0.9 CSS px at a 900px canvas ≈ 1.4 buffer px/CSS px
-// before smoothing.
-const MAX_BUFFER_AREA = 900 * 620;
+// Internal raster resolution: matched to the canvas at device pixels (CSS*dpr)
+// and capped by AREA so a large desktop canvas still costs about the same to
+// paint. At or below the cap the buffer is exactly the canvas size, so the scene
+// blits 1:1 with no resampling -- the crisp result. Above the cap it renders at
+// the cap and smooth-upsamples (a mild upscale reads fine). Only the opaque hull
+// is rasterised here; the sea/sky are a GPU gradient behind a transparent canvas,
+// so the per-frame fill is just the ship. MAX_BUFFER_AREA is the ceiling on that.
+const MAX_BUFFER_AREA = 1150 * 640;
 
 let bufferWidth = 0, bufferHeight = 0;
+let seaCache = null, seaKey = "";
 let holder = null;
 function offCanvas() {
   if (holder === null) holder = document.createElement("canvas");
@@ -67,16 +72,15 @@ function ensureSized() {
 
 function resizeAll() {
   const v = sizeCanvas(viewCanvas, viewCtx);
-  // Buffer area cap: pick a width, derive height from the canvas aspect.
-  let bw = Math.min(v.cssW, 1000);
-  let bh = bw * (v.cssH / v.cssW);
-  const area = bw * bh;
-  if (area > MAX_BUFFER_AREA) {
-    const s = Math.sqrt(MAX_BUFFER_AREA / area);
-    bw *= s; bh *= s;
-  }
-  bufferWidth = Math.max(120, Math.round(bw));
-  bufferHeight = Math.max(80, Math.round(bh));
+  // Match the buffer to the canvas at DEVICE resolution (canvas.width/height are
+  // already CSS*dpr from sizeCanvas), then cap by area. Below the cap this is a
+  // 1:1 pixel match -- no resampling, fully crisp; the hull edges and waterline
+  // land on real device pixels.
+  const rawArea = viewCanvas.width * viewCanvas.height;
+  let scaleDown = 1;
+  if (rawArea > MAX_BUFFER_AREA) scaleDown = Math.sqrt(MAX_BUFFER_AREA / rawArea);
+  bufferWidth = Math.max(120, Math.round(viewCanvas.width * scaleDown));
+  bufferHeight = Math.max(80, Math.round(viewCanvas.height * scaleDown));
   sizeCanvas(curveCanvas, curveCtx);
 }
 
@@ -88,6 +92,17 @@ function resizeAll() {
 function paintView(frame) {
   const off = offCanvas();
   const octx = off.getContext("2d");
+  // The static sky+sea depends only on canvas geometry and the camera framing
+  // (centerY/pitch/zoom), not the heel -- so rasterise it once and keep a copy.
+  // Each frame paints the cached sea, then the hull on top. Recompute when the
+  // buffer size or zoom changes (zoom moves the horizon via project()).
+  if (seaKey !== `${bufferWidth}x${bufferHeight}:${camera.zoom.toFixed(3)}`) {
+    renderScene(octx, { width: bufferWidth, height: bufferHeight });  // sky+sea, no geometry
+    seaCache = new ImageData(new Uint8ClampedArray(octx.getImageData(0, 0, bufferWidth, bufferHeight).data),
+      bufferWidth, bufferHeight);
+    seaKey = `${bufferWidth}x${bufferHeight}:${camera.zoom.toFixed(3)}`;
+  }
+  octx.putImageData(seaCache, 0, 0);
   renderScene(octx, {
     width: bufferWidth,
     height: bufferHeight,
@@ -173,7 +188,7 @@ function updateWords() {
   const s = state.summary;
   const gmWord = s.initialGM > 0.15 ? "stiff" : s.initialGM > 0 ? "tender" : "will loll";
   el("liveText").innerHTML =
-    `A ${gmWord} ship at ${Math.round(state.draftFrac * 100)}% load, heeled ${Math.round(Math.abs(state.heelDeg))}°. ` +
+    `A ${gmWord} ship at ${Math.round(state.draftFrac * 100)}% load. ` +
     `The bright cyan ring is where the water cuts the hull — the <b>waterplane</b>. The blue dot ` +
     `is where all the water's push acts (centre of buoyancy); the gold dot is where the weight ` +
     `acts (centre of gravity).`;
@@ -211,6 +226,10 @@ function frameTick(now) {
 function init() {
   // Bind DOM refs now that we know a browser is present (Node has no document).
   viewCanvas = el("view");
+  // Opaque canvas: the artifact paints its own sky and sea (no CSS backdrop, which
+  // an opaque canvas cannot show, and no external image) so it is fully
+  // self-contained in a sandboxed iframe. The expensive sky/sea fill is cached once
+  // per resize -- see paintView -- so per frame only the hull is rasterised.
   viewCtx = viewCanvas.getContext("2d", { alpha: false });
   curveCanvas = el("curve");
   curveCtx = curveCanvas.getContext("2d", { alpha: false });
@@ -269,6 +288,10 @@ function init() {
   el("levelBtn").addEventListener("click", () => { state.heelDeg = 0; state.heelVel = 0; });
 
   window.addEventListener("resize", () => { sizedWidth = 0; });
+
+  // Automation handle: tests and the framing probe drive the camera and read the
+  // scene through this. Harmless in normal use (the page never reads it back).
+  window.__keel = { camera, state, step };
 
   // ---- boot --------------------------------------------------------------
   resizeAll();

@@ -1,3 +1,4 @@
+import { DEG } from "./stability.js";
 /**
  * diagnostics.js -- draw the ship and its stability curve in text.
  *
@@ -23,7 +24,7 @@
  * than on golden text.
  */
 
-const DEG = Math.PI / 180;
+
 
 /**
  * Draw the waterplane at one heel angle: the outline of the hull sliced by the

@@ -37,13 +37,13 @@ export const camera = {
   // receding surface with a horizon, and the waterline lands near mid-frame. An
   // earlier yaw of -0.52 looked end-on and made the ship a small blob.
   yaw: -0.9,
-  pitch: 0.30,
+  pitch: 0.36,
   distance: 10,
-  zoom: 1.15,
+  zoom: 1.30,
   // Vertical framing pivot as a fraction of canvas height. The horizon of the
   // water plane lands at centerY + tan(pitch)*scale/height*... ; centerY lets the
   // ship and its horizon be placed together without recomputing the projection.
-  centerY: 0.40,
+  centerY: 0.52,
 };
 
 /** Screen row of the water-plane horizon for the given canvas and scale. */
@@ -101,14 +101,17 @@ function paintSky(buf, width, height) {
 }
 
 /** Depth-tested thick line between two already-projected points. */
-function strokeLine(buf, width, height, a, b, rgb, thickness) {
+function strokeLine(buf, width, height, a, b, rgb, thickness, depthOverride) {
   if (a === null || b === null) return;
   const steps = Math.ceil(Math.hypot(b.sx - a.sx, b.sy - a.sy)) || 1;
   for (let s = 0; s <= steps; s += 1) {
     const t = s / steps;
     const sx = a.sx + (b.sx - a.sx) * t;
     const sy = a.sy + (b.sy - a.sy) * t;
-    const depth = a.depth + (b.depth - a.depth) * t;
+    // depthOverride pins the stroke nearer than any surface (like the markers), so
+    // an annotation drawn on top of geometry is never overpainted by a later fill --
+    // that overwrite was what turned the waterline into a dotted line.
+    const depth = depthOverride !== undefined ? depthOverride : a.depth + (b.depth - a.depth) * t;
     const rad = Math.max(0, thickness - 1);
     for (let dy = -rad; dy <= rad; dy += 1) {
       for (let dx = -rad; dx <= rad; dx += 1) {
@@ -212,8 +215,24 @@ const SEA_FAR = [46, 96, 116];
 const HULL_DRY = [206, 120, 74];
 const HULL_WET = [122, 66, 74];
 const WATERLINE = [150, 226, 240];
-const DECK = [52, 60, 74];
 const LIGHT = { x: 0.45, y: -0.5, z: 0.74 };
+
+/**
+ * Hull surface colour at world height zw, blending from the wet antifouling red
+ * to the dry topsides across a narrow band straddling the waterline (zw = 0).
+ * The old test was a hard zw < 0 switch, which drew a staircase along the water
+ * line wherever a coarse quad straddled it. A smooth band turns that into a soft
+ * colour break that still marks exactly where the water is.
+ */
+const WET_DRY_BAND = 0.07;  // metres of half-width around the water surface
+function hullColour(zw) {
+  const t = Math.min(1, Math.max(0, (zw + WET_DRY_BAND) / (2 * WET_DRY_BAND)));
+  return [
+    HULL_WET[0] + (HULL_DRY[0] - HULL_WET[0]) * t,
+    HULL_WET[1] + (HULL_DRY[1] - HULL_WET[1]) * t,
+    HULL_WET[2] + (HULL_DRY[2] - HULL_WET[2]) * t,
+  ];
+}
 
 function shade(rgb, normal) {
   let d = (normal.x * LIGHT.x + normal.y * LIGHT.y + normal.z * LIGHT.z);
@@ -234,10 +253,11 @@ export function renderScene(ctx, { width, height, deckPolys, waterplane, hullQua
   const image = ctx.createImageData(width, height);
   const buf = { data: image.data, depth: new Float32Array(width * height) };
   const scale = Math.min(width, height) * 0.66;
+  // Self-contained: the artifact paints its own sky and sea onto the opaque canvas
+  // (no CSS backdrop, which an opaque canvas cannot show through, and no external
+  // file). paintStaticSea in ui.js caches the result of these two fills so they
+  // cost a blit per frame, not a full-canvas fill.
   paintSky(buf, width, height);
-
-  // Water surface: a large flat quad on zw = 0, so there is a sea plane and a
-  // horizon the ship's tilt reads against. Depth is uniform, drawn before the hull.
   fillWater(buf, width, height, scale);
 
   // Hull: opaque lofted quads, wet below zw = 0, dry above. Painter-sorted far to
@@ -250,22 +270,17 @@ export function renderScene(ctx, { width, height, deckPolys, waterplane, hullQua
       if (proj.some((p) => p === null)) continue;
       const meanZ = (q[0].z + q[1].z + q[2].z + q[3].z) / 4;
       const depth = proj.reduce((t, p) => t + p.depth, 0) / proj.length;
-      const rgb = shade(meanZ < 0 ? HULL_WET : HULL_DRY, normalOf(q));
+      const rgb = shade(hullColour(meanZ), normalOf(q));
       faces.push({ proj, depth, rgb });
     }
     faces.sort((a, b) => a.depth - b.depth);   // far (large depth is near; here sort so far paints first)
     for (const f of faces) fillPolyDepth(buf, width, height, f.proj, f.rgb, f.depth);
   }
 
-  // Deck outline + sheer: a bright thin ring so the topsides edge reads against sky.
-  if (deckPolys) {
-    for (const ring of deckPolys) {
-      const pts = ring.map((p) => project(p, width, height, scale));
-      for (let i = 0; i < pts.length; i += 1) {
-        strokeLine(buf, width, height, pts[i], pts[(i + 1) % pts.length], DECK, 2);
-      }
-    }
-  }
+  // No deck stroke: the opaque hull already gives a clean silhouette against the
+  // sky, and stroking the far sheer only read as a sketchy ghost polygon floating
+  // off the near hull. (deckPolys is still produced and remains available; drawing
+  // it added noise, not information.)
 
   // Waterplane: the water's cut through the hull -- the shape that does the
   // righting. Drawn as a thin bright ring (not filled), on top of the hull.
@@ -277,8 +292,8 @@ export function renderScene(ctx, { width, height, deckPolys, waterplane, hullQua
     for (let i = 0; i < pts.length; i += 1) {
       const a = pts[i], b = pts[(i + 1) % pts.length];
       if (a === null || b === null) continue;
-      if (Math.hypot(a.sx - b.sx, a.sy - b.sy) < 2.5) continue;
-      strokeLine(buf, width, height, a, b, WATERLINE, 2);
+      if (Math.hypot(a.sx - b.sx, a.sy - b.sy) < 1.2) continue;
+      strokeLine(buf, width, height, a, b, WATERLINE, 1, 1e6);
     }
   }
 
@@ -327,11 +342,17 @@ function fillWater(buf, width, height, scale) {
   const span = Math.max(1, height - waterRow);
   for (let y = Math.floor(waterRow); y < height; y += 1) {
     const t = (y - waterRow) / span;
+    // Near the horizon (top of the sea) ease the colour toward the sky so the
+    // sea/sky boundary reads as haze rather than a hard cut line.
+    const haze = Math.max(0, 1 - t / 0.06);
     const rgb = [
       SEA_FAR[0] + (SEA[0] - SEA_FAR[0]) * t,
       SEA_FAR[1] + (SEA[1] - SEA_FAR[1]) * t,
       SEA_FAR[2] + (SEA[2] - SEA_FAR[2]) * t,
     ];
+    rgb[0] += (SKY_BOTTOM[0] - rgb[0]) * haze * 0.7;
+    rgb[1] += (SKY_BOTTOM[1] - rgb[1]) * haze * 0.7;
+    rgb[2] += (SKY_BOTTOM[2] - rgb[2]) * haze * 0.7;
     const depth = 20 * (1 - t) + 4;
     for (let x = 0; x < width; x += 1) setPixel(buf, width, height, x, y, rgb, depth);
   }
