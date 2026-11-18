@@ -5,10 +5,12 @@ why. This is a real buoyancy simulation, not an animation: every frame the
 water's upward push is re-integrated from the shape the hull actually has
 underwater at that angle, and the ship rolls under the moment that produces.
 
-<!-- Front page image: docs/shot-initial.png -->
+<!-- Front page image: docs/thumb.png -->
 
-![A ship heeled over at sea, with the waterline ring and the buoyancy and
-gravity markers visible.](docs/shot-initial.png)
+**[▶ Play it live](https://raw.githack.com/thaumapolis/keel/main/index.html)** · [![check](https://github.com/thaumapolis/keel/actions/workflows/check.yml/badge.svg?branch=main)](https://github.com/thaumapolis/keel/actions/workflows/check.yml)
+
+![The ship heeled over: the cyan waterline ring, the buoyancy (blue) and gravity
+(gold) markers, the righting-arm readout, and the sea meeting the sky at the horizon.](docs/thumb.png)
 
 ## What you're seeing
 
